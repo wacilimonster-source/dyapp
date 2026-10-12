@@ -645,7 +645,8 @@ import { retrieve } from './memory/retrieve.js';
       wrap.insertAdjacentHTML('beforeend', `<div class="fx"><span class="fx-chip">偶遇 · ${esc(result.encounter.name)}</span></div>`);
     }
     // 建议吸附到输入区上方（不再埋在叙事流里）
-    setSuggestions(result.choices || []);
+    const choices = result.choices || [];
+    setSuggestions(choices);
 
     turns.push({ role: 'assistant', text: result.narrative, effects: result.effects, choices, scene: result.scene });
     scrollStream();
