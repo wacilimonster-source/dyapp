@@ -68,7 +68,7 @@
 | 端 | 产物 | 说明 |
 |---|---|---|
 | Windows | `app/src-tauri/target/debug/dyapp.exe` | 调试版 19 MB；正式安装包用 `cargo tauri build` 出 msi/nsis |
-| 安卓手机 / 平板 | `app/src-tauri/gen/android/app/build/outputs/apk/universal/release/dyapp-0.1.0-universal.apk` | 9.9 MB，已用 debug 证书签名，**可侧载**；`arm64-v8a`，minSdk 26 |
+| 安卓手机 / 平板 | `app/src-tauri/gen/android/app/build/outputs/apk/universal/release/dyapp-0.2.0-universal.apk` | 32.3 MB，已用 debug 证书签名，**可侧载**；通用包（`arm64-v8a` / `armeabi-v7a` / `x86` / `x86_64`），minSdk 26 |
 
 > 这两个产物在 `.gitignore` 内，不进仓库（构建产物不入库）。APK 用 debug 证书只能自测与私人使用，
 > 正式分发需自备 keystore（见 `docs/03` 第 8.3 节）。
