@@ -40,3 +40,7 @@ local.properties
 
 # 本地打包 / 预览产物
 *.zip
+
+# 一次性临时脚本（我用来批量改文件的那种）：不进仓库
+tools/_*.py
+tools/_*.mjs
