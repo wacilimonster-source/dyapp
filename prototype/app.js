@@ -12,6 +12,11 @@ import { daoStage, vague, crisisLevel } from './engine/rules.js';
 import { buildIndex } from './memory/index.js';
 import { tokenize } from './memory/tokenize.js';
 import { createStore, newSaveId } from './store/index.js';
+import { parsePreset, toStPreset, SUPPORTED_SAMPLING } from './preset/schema.js';
+import { SUPPORTED_MACROS } from './preset/macros.js';
+import { createPresetStore, safePresetId } from './preset/store.js';
+import { buildPromptPlan, stSamplingToOverride } from './narrator/plan.js';
+import { retrieve } from './memory/retrieve.js';
 
 (function () {
   'use strict';
@@ -34,6 +39,85 @@ import { createStore, newSaveId } from './store/index.js';
   let WORLDBOOK = null;
   /** 存档后端（壳 / localStorage）。 */
   const store = createStore();
+  const presetStore = createPresetStore();
+
+  /* ---------- 对话模式与预设 ---------- */
+  const CHAT_PREFS_KEY = 'dy.chat';
+  const CHAT = loadChatPrefs();
+  let CHAT_PRESETS = [];      // 预设列表
+  let CHAT_PRESET = null;     // 当前启用预设的解析视图
+  let CHAT_PRESET_RAW = null; // 原始 JSON 文本
+
+  function defaultChatPrefs() {
+    return { mode: 'default', presetId: '', charName: '道渊', userName: '' };
+  }
+  function loadChatPrefs() {
+    try { return Object.assign(defaultChatPrefs(), JSON.parse(localStorage.getItem(CHAT_PREFS_KEY) || '{}')); }
+    catch { return defaultChatPrefs(); }
+  }
+  function saveChatPrefs() {
+    try { localStorage.setItem(CHAT_PREFS_KEY, JSON.stringify(CHAT)); } catch { /* 忽略配额 */ }
+  }
+
+  /** 拉预设列表，并重新解析当前选中的那份。 */
+  async function refreshPresets() {
+    try {
+      CHAT_PRESETS = presetStore.persistent || true ? await presetStore.list() : [];
+    } catch (e) {
+      CHAT_PRESETS = [];
+      console.warn('[preset] 列表读取失败：', e.message);
+    }
+    CHAT_PRESET = null;
+    CHAT_PRESET_RAW = null;
+    if (CHAT.presetId) {
+      const found = CHAT_PRESETS.find((x) => x.id === CHAT.presetId);
+      if (!found) {
+        CHAT.presetId = '';           // 预设被删了
+        CHAT.mode = 'default';
+        saveChatPrefs();
+      } else {
+        try {
+          CHAT_PRESET_RAW = await presetStore.read(CHAT.presetId);
+          const parsed = parsePreset(CHAT_PRESET_RAW);
+          if (parsed.ok) {
+            CHAT_PRESET = { ...parsed.preset, name: found.name, id: found.id };
+          } else {
+            console.warn('[preset] 解析失败：', parsed.error);
+          }
+        } catch (e) {
+          console.warn('[preset] 读取失败：', e.message);
+        }
+      }
+    }
+  }
+
+  /** 组装一份"当前设置下会发出去"的提示词计划（供预览，不真的发请求）。 */
+  function buildPreviewPlan() {
+    const lastUser = [...turns].reverse().find((t) => t.role === 'user');
+    let retrieved = [];
+    try {
+      retrieved = retrieve(WORLD_INDEX, {
+        action: lastUser ? lastUser.text : '',
+        place: state.世界.当前地点,
+        npcs: [...Object.keys(state.人物 || {}), ...Object.keys(state.道侣 || {})],
+        realm: state.主角.境界,
+        recent: turns.slice(-4).map((t) => t.text).join(' '),
+      }).items;
+    } catch { /* 预览容错：检索失败就不展示 L2 */ }
+    return buildPromptPlan({
+      mode: CHAT.mode === 'preset' && CHAT_PRESET ? 'preset' : 'default',
+      preset: CHAT_PRESET,
+      engine: {
+        action: lastUser ? lastUser.text : '（尚无玩家行动）',
+        index: WORLD_INDEX,
+        state,
+        retrieved,
+        recent: turns.slice(-8).map((t) => ({ role: t.role, text: t.text })),
+        hints: [],
+      },
+      names: { charName: CHAT.charName, userName: CHAT.userName || state.主角.姓名 },
+    });
+  }
   let currentSaveId = newSaveId();
 
   async function loadWorldbook() {
@@ -410,6 +494,12 @@ import { createStore, newSaveId } from './store/index.js';
         arbiterConfigured: !!(LLM.settings && LLM.settings.arbiter && LLM.settings.arbiter.model),
         onDelta: (_chunk, full) => { bubble.textContent = full; scrollStream(); },
         fallbackNarratives: REPLIES.map((r) => r.text),
+        chat: {
+          mode: CHAT.mode,
+          preset: CHAT_PRESET,
+          charName: CHAT.charName || '道渊',
+          userName: CHAT.userName || state.主角.姓名,
+        },
       });
     } catch (e) {
       bubble.classList.remove('typing');
@@ -791,6 +881,112 @@ import { createStore, newSaveId } from './store/index.js';
     return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
   }
 
+  /* ================= 对话模式与预设（UI） ================= */
+
+  function samplingSummary(sm) {
+    if (!sm || typeof sm !== 'object') return '（预设未带采样参数，沿用应用设置）';
+    const keys = Object.keys(sm).filter((k) => SUPPORTED_SAMPLING.includes(k));
+    if (!keys.length) return '（预设未带采样参数，沿用应用设置）';
+    return keys.map((k) => `${k}=${sm[k]}`).join('  ');
+  }
+
+  function chatModeSectionHTML() {
+    const isPreset = CHAT.mode === 'preset';
+    const cur = CHAT_PRESETS.find((p) => p.id === CHAT.presetId);
+    let detail = '';
+    if (isPreset) {
+      if (CHAT_PRESET) {
+        const enabled = (CHAT_PRESET.order || []).filter((o) => o.enabled).length || CHAT_PRESET.entries.length;
+        const ignored = Object.keys(CHAT_PRESET.sampling || {}).filter((k) => !SUPPORTED_SAMPLING.includes(k));
+        const warns = CHAT_PRESET.warnings || [];
+        detail = `<div class="card" style="margin-top:10px">
+            <div class="kv"><span class="k">名称</span><span class="v">${esc(CHAT_PRESET.name || (cur && cur.id) || '')}</span></div>
+            <div class="kv"><span class="k">条目</span><span class="v">共 ${CHAT_PRESET.entries.length} 条 · 启用 ${enabled} 条 · 顺序组 ${esc(String(CHAT_PRESET.orderGroup))}</span></div>
+            <div class="kv"><span class="k">采样</span><span class="v">${esc(samplingSummary(CHAT_PRESET.sampling))}</span></div>
+            ${ignored.length ? `<div class="kv"><span class="k">已忽略</span><span class="v">${esc(ignored.join(' / '))}</span></div>` : ''}
+            ${warns.length ? `<div class="upd-notes" style="margin-top:8px">${esc(warns.join(String.fromCharCode(10)))}</div>` : ''}
+          </div>`;
+      } else {
+        detail = `<div class="cr-hint">${CHAT.presetId ? '预设读取失败，详见控制台。' : '还没有预设。导入一份 ST 的 Chat Completion 预设 JSON 即可。'}</div>`;
+      }
+    }
+    return `<div class="sect-title">对 话 模 式</div>
+      <div class="opts">
+        <button class="opt ${!isPreset ? 'on' : ''}" data-chatmode="default">默认对话<span class="d">引擎内置分层：世界法则 + 检索 + 状态摘要 + 近况 + 本回合</span></button>
+        <button class="opt ${isPreset ? 'on' : ''}" data-chatmode="preset">使用预设<span class="d">导入 ST 酒馆的 Chat Completion 预设，提示词完全按预设展开</span></button>
+      </div>
+      ${isPreset ? `
+      <div class="field"><label>当前预设</label>
+        <select id="chat-preset">
+          <option value="">（未选择）</option>
+          ${CHAT_PRESETS.map((pr) => `<option value="${esc(pr.id)}" ${CHAT.presetId === pr.id ? 'selected' : ''}>${esc(pr.name)}</option>`).join('')}
+        </select></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="preset-import">导入 JSON</button>
+        <button class="btn" id="preset-paste">粘贴 JSON</button>
+        <button class="btn" id="preset-del">删除当前</button>
+      </div>
+      <input type="file" id="preset-file" accept="application/json,.json" style="display:none">
+      ${detail}
+      <div class="field" style="margin-top:12px"><label>角色名 {{char}} · AI 扮演谁</label>
+        <input id="chat-char" value="${esc(CHAT.charName)}" placeholder="道渊"></div>
+      <div class="field"><label>用户名 {{user}} · 玩家是谁</label>
+        <input id="chat-user" value="${esc(CHAT.userName)}" placeholder="留空则用主角姓名"></div>
+      <div class="cr-hint">已实现的宏：${esc(SUPPORTED_MACROS.join('　'))}。未实现的宏会原样保留，并在预览里列出。</div>
+      ` : ''}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="chat-preview">预览将发送的提示词</button>
+        ${isPreset ? '<button class="btn" id="chat-export">导出为 ST 预设</button>' : ''}
+      </div>`;
+  }
+
+  async function importPresetText(text, name) {
+    const parsed = parsePreset(text);
+    if (!parsed.ok) { alert('导入失败：' + parsed.error); return; }
+    try {
+      const meta = await presetStore.importRaw(text, name || 'ST 预设');
+      CHAT.presetId = meta.id;
+      CHAT.mode = 'preset';
+      saveChatPrefs();
+      await refreshPresets();
+      renderSidebar(true);
+      if ((parsed.preset.warnings || []).length) {
+        alert('导入成功，但有提示：' + String.fromCharCode(10) + parsed.preset.warnings.join(String.fromCharCode(10)));
+      }
+    } catch (e) {
+      alert('导入失败：' + e.message);
+    }
+  }
+
+  function showPreview() {
+    let plan;
+    try { plan = buildPreviewPlan(); } catch (e) { alert('预览生成失败：' + e.message); return; }
+    const rows = plan.messages.map((m, i) =>
+      `<div class="kv"><span class="k">[${i + 1}] ${esc(m.role)}</span><span class="v">${esc(m.content.length > 200 ? m.content.slice(0, 200) + '…' : m.content)}</span></div>`).join('');
+    const layers = (plan.meta.layers || []).map((l) => `${esc(l.name)}:${l.tokens == null ? '?' : l.tokens}`).join('　');
+    const warns = plan.warnings || [];
+    $('#judge-box').innerHTML = `<h3>将 发 送 的 提 示 词</h3>
+      <div class="cr-hint" style="text-align:left">${plan.meta.mode === 'preset' ? '预设「' + esc(plan.meta.presetName || '') + '」' : '默认对话'} · 共 ${plan.messages.length} 条 · 约 ${plan.meta.totalTokens} tok</div>
+      <div style="max-height:46vh;overflow:auto;text-align:left;margin:10px 0">${rows}</div>
+      <div class="cr-hint" style="text-align:left">分层：${layers}</div>
+      ${warns.length ? `<div class="upd-notes" style="margin-top:10px;text-align:left">${esc(warns.join(String.fromCharCode(10)))}</div>` : ''}
+      <button class="btn primary" id="preview-ok" style="margin-top:14px">关 闭</button>`;
+    $('#judge').classList.add('open');
+    $('#preview-ok').addEventListener('click', () => $('#judge').classList.remove('open'));
+  }
+
+  function exportAsStPreset() {
+    const raw = JSON.stringify(toStPreset({ name: '道渊 · 默认' }), null, 2);
+    const blob = new Blob([raw], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'daoyuan-default-preset.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   /* ================= 侧栏面板 ================= */
   /**
    * 面板是否正在被编辑。
@@ -937,6 +1133,55 @@ import { createStore, newSaveId } from './store/index.js';
         try { await window.DYApp.llm.clearKey(); await refreshLlm(); renderSidebar(); }
         catch (e) { $('#cfg-log').textContent = '清除失败：' + ((e && e.message) || e); }
       });
+      // ---- 对话模式与预设 ----
+      $$('#sb-body [data-chatmode]').forEach((b) => b.addEventListener('click', async () => {
+        CHAT.mode = b.dataset.chatmode;
+        saveChatPrefs();
+        await refreshPresets();
+        renderSidebar(true);
+      }));
+      const selPreset = $('#chat-preset');
+      if (selPreset) selPreset.addEventListener('change', async () => {
+        CHAT.presetId = selPreset.value;
+        if (CHAT.presetId) CHAT.mode = 'preset';
+        saveChatPrefs();
+        await refreshPresets();
+        renderSidebar(true);
+      });
+      const ce = $('#chat-char');
+      if (ce) ce.addEventListener('input', () => { CHAT.charName = ce.value; saveChatPrefs(); });
+      const cu = $('#chat-user');
+      if (cu) cu.addEventListener('input', () => { CHAT.userName = cu.value; saveChatPrefs(); });
+      const pImport = $('#preset-import');
+      const pFile = $('#preset-file');
+      if (pImport && pFile) {
+        pImport.addEventListener('click', () => pFile.click());
+        pFile.addEventListener('change', async () => {
+          const f = pFile.files && pFile.files[0];
+          if (!f) return;
+          await importPresetText(await f.text(), f.name.replace(/\.json$/i, ''));
+        });
+      }
+      const pPaste = $('#preset-paste');
+      if (pPaste) pPaste.addEventListener('click', async () => {
+        const t = prompt('粘贴 ST 的 Chat Completion 预设 JSON：');
+        if (t) await importPresetText(t, 'ST 预设');
+      });
+      const pDel = $('#preset-del');
+      if (pDel) pDel.addEventListener('click', async () => {
+        if (!CHAT.presetId) return;
+        if (!confirm('删除预设「' + CHAT.presetId + '」？')) return;
+        await presetStore.remove(CHAT.presetId);
+        CHAT.presetId = '';
+        CHAT.mode = 'default';
+        saveChatPrefs();
+        await refreshPresets();
+        renderSidebar(true);
+      });
+      const pView = $('#chat-preview');
+      if (pView) pView.addEventListener('click', showPreview);
+      const pExport = $('#chat-export');
+      if (pExport) pExport.addEventListener('click', exportAsStPreset);
     }
 
     /* ---------- 进度同步面板 ---------- */
@@ -1237,6 +1482,7 @@ import { createStore, newSaveId } from './store/index.js';
           <div class="field" style="margin:0"><label>max_tokens（可空）</label><input id="cfg-max" value="${n.maxTokens == null ? '' : n.maxTokens}"></div>
         </div>
         <div class="field"><label>裁决模型（辅，可空）</label><input id="cfg-arbiter" value="${esc((s.arbiter && s.arbiter.model) || '')}" placeholder="gpt-4o-mini"></div>
+        ${chatModeSectionHTML()}
         <div style="display:flex;gap:8px;margin-top:12px">
           <button class="btn primary" id="cfg-save">保 存</button>
           <button class="btn" id="cfg-test">测试 · 拉取模型</button>
@@ -1389,6 +1635,9 @@ import { createStore, newSaveId } from './store/index.js';
 
   // 存档列表
   refreshSaves().then(() => { if (curPanel === '存档') renderSidebar(); });
+
+  // 预设列表（本机配置，不参与同步）
+  refreshPresets().then(() => { if (curPanel === '模型') renderSidebar(); });
 
   // 启动自检：跑到这里说明模块求值没有抛错
   if (typeof window.__dyMarkBootOk === 'function') window.__dyMarkBootOk();

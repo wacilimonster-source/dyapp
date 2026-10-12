@@ -216,6 +216,26 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// 预设带来的采样覆盖（只收 OpenAI 兼容端点认识的字段）。
+/// ST 预设里还有 top_k / top_a / min_p / repetition_penalty 等非标准项，
+/// 这里**故意不收**——严格端点遇到未知字段会直接 400。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingOverride {
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f64>,
+    #[serde(default)]
+    pub presence_penalty: Option<f64>,
+    #[serde(default)]
+    pub seed: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatRequest {
@@ -231,6 +251,32 @@ pub struct ChatRequest {
     pub json_mode: bool,
     #[serde(default)]
     pub overrides: Option<ModelSlot>,
+    /// 来自「对话预设」的采样参数；缺省则用应用自己的设置
+    #[serde(default)]
+    pub sampling: Option<SamplingOverride>,
+}
+
+/// 把预设的采样参数套到槽位上。
+fn apply_sampling(slot: &mut ModelSlot, s: &SamplingOverride) {
+    if let Some(v) = s.temperature {
+        slot.temperature = v;
+    }
+    if let Some(v) = s.top_p {
+        slot.top_p = v;
+    }
+    if let Some(v) = s.max_tokens {
+        slot.max_tokens = Some(v);
+    }
+    // 罚项与 seed 走 extra_body：它们是请求体顶层字段，而 ModelSlot 只留了必要的几个
+    if let Some(v) = s.frequency_penalty {
+        slot.extra_body.insert("frequency_penalty".into(), json!(v));
+    }
+    if let Some(v) = s.presence_penalty {
+        slot.extra_body.insert("presence_penalty".into(), json!(v));
+    }
+    if let Some(v) = s.seed {
+        slot.extra_body.insert("seed".into(), json!(v));
+    }
 }
 
 fn client(timeout_secs: u64) -> AppResult<reqwest::Client> {
@@ -388,7 +434,10 @@ pub async fn chat_stream(
 ) -> AppResult<()> {
     let channel = format!("api://{}", req.request_id);
     let settings = llm.snapshot();
-    let (provider, slot) = pick_slot(&settings, &req)?;
+    let (provider, mut slot) = pick_slot(&settings, &req)?;
+    if let Some(s) = &req.sampling {
+        apply_sampling(&mut slot, s);
+    }
     let key = secrets.snapshot().llm_api_key;
 
     if provider.requires_api_key && key.is_empty() {
@@ -438,7 +487,10 @@ pub async fn complete_json(
     req: ChatRequest,
 ) -> AppResult<Value> {
     let settings = llm.snapshot();
-    let (provider, slot) = pick_slot(&settings, &req)?;
+    let (provider, mut slot) = pick_slot(&settings, &req)?;
+    if let Some(s) = &req.sampling {
+        apply_sampling(&mut slot, s);
+    }
     let key = secrets.snapshot().llm_api_key;
     if provider.requires_api_key && key.is_empty() {
         return Err(AppError::NotConfigured(

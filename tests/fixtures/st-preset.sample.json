@@ -1,0 +1,65 @@
+{
+  "name": "Fixture · ST 形状",
+  "chat_completion_source": "openai",
+  "openai_model": "gpt-4o",
+  "custom_url": "https://ignored.example/v1",
+  "temperature": 0.85,
+  "frequency_penalty": 0.1,
+  "presence_penalty": 0.2,
+  "top_p": 0.95,
+  "top_k": 40,
+  "min_p": 0.05,
+  "repetition_penalty": 1.1,
+  "seed": 12345,
+  "openai_max_context": 8192,
+  "openai_max_tokens": 512,
+  "squash_system_messages": true,
+  "names_behavior": 0,
+  "stream_openai": true,
+  "wi_format": "{0}",
+  "scenario_format": "{{scenario}}",
+  "jailbreak": "should-be-ignored-because-not-a-known-key",
+  "unknown_future_key_we_do_not_understand": { "nested": [1, 2, 3] },
+  "prompts": [
+    { "identifier": "main", "name": "Main Prompt", "system_prompt": true, "role": "system", "content": "你是 {{char}}，与 {{user}} 在修仙界同行。只写正文。" },
+    { "identifier": "nsfw", "name": "Auxiliary Prompt", "system_prompt": true, "role": "system", "content": "尺度放开，但不要打破世界观。" },
+    { "identifier": "worldInfoBefore", "name": "World Info (before)", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "charDescription", "name": "Char Description", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "charPersonality", "name": "Char Personality", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "scenario", "name": "Scenario", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "personaDescription", "name": "Persona Description", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "worldInfoAfter", "name": "World Info (after)", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "dialogueExamples", "name": "Chat Examples", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "chatHistory", "name": "Chat History", "system_prompt": true, "marker": true, "content": "" },
+    { "identifier": "jailbreak", "name": "Post-History Instructions", "system_prompt": true, "role": "system", "content": "记住：不要输出任何状态标记。" },
+    { "identifier": "custom-1", "name": "我的私货", "system_prompt": false, "role": "system", "content": "深插条目：此刻正在下雨。", "injection_position": 1, "injection_depth": 2, "injection_order": 100 },
+    { "identifier": "custom-2", "name": "触发才出现", "system_prompt": false, "role": "system", "content": "（密语）墙后有人。", "injection_position": 0, "injection_trigger": ["看墙", "查探"] }
+  ],
+  "prompt_order": [
+    {
+      "character_id": 100001,
+      "order": [
+        { "identifier": "main", "enabled": false }
+      ]
+    },
+    {
+      "character_id": 100000,
+      "order": [
+        { "identifier": "main", "enabled": true },
+        { "identifier": "worldInfoBefore", "enabled": true },
+        { "identifier": "charDescription", "enabled": true },
+        { "identifier": "charPersonality", "enabled": true },
+        { "identifier": "personaDescription", "enabled": true },
+        { "identifier": "scenario", "enabled": true },
+        { "identifier": "worldInfoAfter", "enabled": true },
+        { "identifier": "dialogueExamples", "enabled": true },
+        { "identifier": "nsfw", "enabled": true },
+        { "identifier": "custom-1", "enabled": true },
+        { "identifier": "custom-2", "enabled": true },
+        { "identifier": "chatHistory", "enabled": true },
+        { "identifier": "jailbreak", "enabled": true },
+        { "identifier": "missing-entry", "enabled": true }
+      ]
+    }
+  ]
+}

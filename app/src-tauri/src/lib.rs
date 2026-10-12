@@ -2,6 +2,7 @@ mod crypto;
 mod error;
 mod llm;
 mod paths;
+mod preset;
 mod save;
 mod secrets;
 mod sync;
@@ -34,6 +35,14 @@ pub fn run() {
             save::save_delete,
             save::save_export,
             save::save_import,
+            // 预设（ST Chat Completion 预设，原样存本机）
+            preset::preset_list,
+            preset::preset_read,
+            preset::preset_write,
+            preset::preset_delete,
+            preset::preset_rename,
+            preset::preset_import,
+            preset::preset_dir,
             // 多端进度同步（GitHub）
             sync::sync_config_get,
             sync::sync_config_set,

@@ -13,7 +13,8 @@ import { sceneClass, tick as encounterTick, pickCandidate } from './encounter.js
 import { rollDuel } from './dice.js';
 import { advanceTime, deriveTime, TIME_SLOTS, SEASONS } from './time.js';
 import { retrieve } from '../memory/retrieve.js';
-import { composeNarrative, composeArbiter } from '../narrator/prompt.js';
+import { composeArbiter } from '../narrator/prompt.js';
+import { buildPromptPlan, stSamplingToOverride } from '../narrator/plan.js';
 import { streamNarrative, decide } from '../narrator/client.js';
 import { parseTurnResult, sanitizeNarrative, stateBlockIndex } from '../narrator/parse.js';
 
@@ -85,6 +86,7 @@ export async function runTurn(input) {
   const {
     action, state, index, llm, rng,
     recent = [], onDelta, onPhase, fallbackNarratives = [],
+    chat = null,
   } = input;
 
   const text = String(action?.text || '').trim();
@@ -134,16 +136,18 @@ export async function runTurn(input) {
 
   const duel = intent.duel || null;
 
-  // 叙事
+  // 叙事：默认模式与预设模式在这里分岔，但产出的都是同一种 PromptPlan
   onPhase?.('narrating');
-  const { messages, meta } = composeNarrative({
-    action: text || '（静观其变）',
-    index,
-    state,
-    retrieved,
-    recent,
-    hints,
+  const plan = buildPromptPlan({
+    mode: chat?.mode === 'preset' && chat.preset ? 'preset' : 'default',
+    preset: chat?.preset,
+    engine: { action: text || '（静观其变）', index, state, retrieved, recent, hints },
+    names: { charName: chat?.charName, userName: chat?.userName, style: chat?.style },
+    rng,
   });
+  const messages = plan.messages;
+  const meta = plan.meta;
+  for (const w of plan.warnings || []) logs.push(`预设：${w}`);
 
   // 流式期间就截断：一旦模型开始吐状态标记，界面立即停止追加，
   // 避免玩家眼看着正文里长出一整块 XML。
@@ -154,7 +158,10 @@ export async function runTurn(input) {
     }
     : undefined;
 
-  const streamed = await streamNarrative(llm, messages, onDeltaSafe, {});
+  const streamed = await streamNarrative(llm, messages, onDeltaSafe, {
+    // 预设里的采样参数覆盖应用默认（决策：预设管"怎么说话"）
+    sampling: stSamplingToOverride(plan.sampling),
+  });
   let narrative = sanitizeNarrative(streamed.text);
   let source = streamed.ok ? 'llm' : 'fallback';
 
@@ -224,7 +231,7 @@ export async function runTurn(input) {
     encounter,
     duel,
     source,
-    meta: { prompt: meta, retrieve: retrieveMeta },
+    meta: { prompt: meta, retrieve: retrieveMeta, plan },
     logs,
   };
 }

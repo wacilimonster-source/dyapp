@@ -28,7 +28,7 @@ export async function streamNarrative(llm, messages, onDelta, opts) {
   const requestId = opts?.requestId || `req-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
   try {
     await llm.stream(
-      { requestId, messages, stream: true, jsonMode: false, useArbiter: !!opts?.useArbiter },
+      { requestId, messages, stream: true, jsonMode: false, useArbiter: !!opts?.useArbiter, sampling: opts?.sampling },
       (ev) => {
         if (!ev) return;
         if (ev.type === 'delta' && ev.data && typeof ev.data.text === 'string') {

@@ -60,6 +60,18 @@ window.DYApp = (function () {
     importBundle: (bundleJson) => call('save_import', { bundleJson }),
   };
 
+  /* ---------------- 预设（ST Chat Completion 预设） ---------------- */
+  const preset = {
+    list: () => call('preset_list'),
+    read: (id) => call('preset_read', { id }),
+    write: (id, raw, name) => call('preset_write', { id, raw, name: name || null }),
+    remove: (id) => call('preset_delete', { id }),
+    rename: (id, name) => call('preset_rename', { id, name }),
+    /** 导入原文 JSON；id 冲突自动加后缀，不覆盖已有预设 */
+    importRaw: (raw, name) => call('preset_import', { raw, name: name || null }),
+    dir: () => call('preset_dir'),
+  };
+
   /* ---------------- 多端进度同步（GitHub） ---------------- */
   const sync = {
     getConfig: () => call('sync_config_get'),
@@ -73,5 +85,5 @@ window.DYApp = (function () {
     pushAll: () => call('sync_push_all'),
   };
 
-  return { available, llm, sync, save, platform: tauri ? 'tauri' : 'web' };
+  return { available, llm, sync, save, preset, platform: tauri ? 'tauri' : 'web' };
 })();

@@ -175,7 +175,8 @@ export function stateSummary(state) {
   const dai = Object.keys(state?.道侣 || {}).join('、') || '无';
   const pet = Object.keys(state?.灵宠 || {}).join('、') || '无';
   return [
-    `${P.姓名} · ${P.境界}（DC:${P.境界DC}） · ${P.宗门} · ${P.所在界}`,
+    // 境界标签由 engine 的 realmLabel 生成，本身已含（DC:n），这里不再拼
+    `${P.姓名} · ${P.境界} · ${P.宗门} · ${P.所在界}`,
     `时间：${W.当前时间}｜地点：${W.当前地点}｜天气：${W.天气}｜危机：${W.危机程度}`,
     `生命${P.生命} 精血${P.精血} 灵力${P.灵力} 修为${P.修为} 神识${P.神识} 道心${P.道心}`,
     `灵根：${P.灵根}｜状态：${P.状态}｜气运：${Object.keys(P.气运 || {}).join('、') || '无'}`,
