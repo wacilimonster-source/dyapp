@@ -1,7 +1,11 @@
 name: release
 
-# 打 tag 即发版：tag 形如 v0.1.0，且必须与 VERSION 文件一致。
+# 打 tag 即发版：tag 形如 v0.2.0，且必须与 VERSION 文件一致。
 # 客户端「检查更新」读取的就是这里的 Release（tag = 版本号，body = 更新说明）。
+#
+# 更新说明优先取 `release-notes/<tag>.md`（由人写、进仓库留档），没有该文件才退回自动生成。
+# **再次推送同一个 tag 是安全的**：Release 已存在时改为"更新说明 + 覆盖附件"，
+# 这样修一版说明不必删 Release，也不会把工作流刷红。
 on:
   push:
     tags:
@@ -33,13 +37,76 @@ jobs:
           zip -r "../dyapp-prototype-${GITHUB_REF_NAME}.zip" . -x '*.DS_Store' '*/__MACOSX/*'
           ls -lh "../dyapp-prototype-${GITHUB_REF_NAME}.zip"
 
-      # 安卓壳工程接入后，在这里补上 Gradle/Tauri 构建，把 APK 一并作为 release asset 上传，
-      # 客户端即可从其 browser_download_url 直接下载安装（见 docs/02-发布与更新机制.md）。
-      - name: 创建 Release
+      - name: 创建或更新 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "dyapp-prototype-${GITHUB_REF_NAME}.zip" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          ZIP="dyapp-prototype-${TAG}.zip"
+          NOTES="release-notes/${TAG}.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 → 更新说明与附件"
+            if [ -f "$NOTES" ]; then gh release edit "$TAG" --notes-file "$NOTES"; else gh release edit "$TAG" --generate-notes; fi
+            gh release upload "$TAG" "$ZIP" --clobber
+          elif [ -f "$NOTES" ]; then
+            gh release create "$TAG" "$ZIP" --title "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "$ZIP" --title "$TAG" --generate-notes
+          fi
+          if [ -f "$NOTES" ]; then echo "更新说明来自 $NOTES"; else echo "::notice::没有 release-notes/${TAG}.md，本次用自动生成的说明"; fi
+
+  # 安卓 APK 一并挂到 Release 附件（客户端「检查更新」打开的就是这个 Release）。
+  #
+  # 两点说明：
+  #   1. `continue-on-error: true` —— 附件构建失败**不阻塞发版**：Release 与说明先生效，
+  #      APK 之后重推 tag 或跑一次 build-artifacts 都能再补。
+  #   2. CI **不持有签名材料**（keystore 不入库，这是硬约束），所以产物是**未签名**的：
+  #      装之前请按 docs/03-应用架构与实现.md 第 7.3 节用 zipalign + apksigner 签一次。
+  apk:
+    needs: release
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 安装 Android NDK
+        run: |
+          sdkmanager "ndk;27.0.12077973" > /dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: 安装 tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: 构建 APK（全部 ABI 的通用包）
+        working-directory: app/src-tauri
+        run: cargo tauri android build --apk
+
+      - name: 挂到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          APK="$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk' | head -1)"
+          if [ -z "$APK" ]; then echo "::error::没找到未签名 APK 产物"; exit 1; fi
+          OUT="dyapp-${GITHUB_REF_NAME#v}-universal-unsigned.apk"
+          cp "$APK" "$OUT"
+          ls -lh "$OUT"
+          gh release upload "${GITHUB_REF_NAME}" "$OUT" --clobber
+          echo "::notice::APK 未签名，安装前请自行签名（docs/03 第 7.3 节）"
