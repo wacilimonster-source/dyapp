@@ -1,0 +1,318 @@
+{
+  "scripts": [
+    {
+      "button": {
+        "buttons": [
+          {
+            "name": "重新处理变量",
+            "visible": true
+          },
+          {
+            "name": "重新读取初始变量",
+            "visible": false
+          },
+          {
+            "name": "快照楼层",
+            "visible": false
+          },
+          {
+            "name": "重演楼层",
+            "visible": false
+          },
+          {
+            "name": "重试额外模型解析",
+            "visible": true
+          },
+          {
+            "name": "清除旧楼层变量",
+            "visible": false
+          }
+        ],
+        "enabled": true
+      },
+      "content": "import 'https://testingcf.jsdelivr.net/gh/NLKASHEI/MVU-offline@v1.0.2/mvu_bundle_full.js'",
+      "data": {},
+      "enabled": true,
+      "export_with": {
+        "button": true,
+        "data": true
+      },
+      "id": "bcf2ba69-20d6-49c1-a355-9a99d52257b7",
+      "info": "",
+      "name": "MVU",
+      "type": "script"
+    },
+    {
+      "button": {
+        "buttons": [],
+        "enabled": true
+      },
+      "content": "import { registerMvuSchema } from 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js';\n\nexport const Schema = z.object({\n  世界: z.object({\n    当前时间: z.string().prefault('未知'),\n    当前地点: z.string().prefault('未知'),\n    危机程度: z.string().prefault('无'),\n    遭遇冷却: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 15))).prefault(0),\n    动向: z.record(\n      z.string().describe('事件标题'),\n      z.preprocess((val) => {\n        if (!val || typeof val !== 'object' || Array.isArray(val)) return val;\n        // 英文→中文自动归一化\n        const map = { type:'类型', description:'描述', desc:'描述', location:'地点', place:'地点', stage:'阶段', phase:'阶段' };\n        const out = {};\n        for (const [k, v] of Object.entries(val)) {\n          out[map[k] || k] = v;\n        }\n        return out;\n      }, z.object({\n        阶段: z.enum(['起', '承', '转', '合']).catch('起').prefault('起'),\n        类型: z.string().prefault('未知'),\n        地点: z.string().prefault(''),\n        描述: z.string().prefault(''),\n      }))\n    ).prefault({}),\n  }).catch({}).prefault({}),\n\n  主角: z.object({\n    姓名: z.string().prefault('未知'),\n    性别: z.string().prefault('未知'),\n    容貌: z.string().prefault('未知'),\n    身形: z.string().prefault('未知'),\n    衣着: z.string().prefault('未知'),\n    境界: z.string().prefault('凡人（DC:0）'),\n    宗门: z.string().prefault('无'),\n    宗门贡献: z.coerce.number().catch(0).prefault(0),\n    所在界: z.enum(['玄天界', '仙界']).catch('玄天界').prefault('玄天界'),\n    生命: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n    精血: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n    灵力: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n    修为: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n    神识: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n    道心: z.coerce.number().catch(50).transform(v => (isNaN(v) ? 50 : _.clamp(v, 0, 100))).prefault(50),\n    神念: z.string().prefault('无'),\n    气运: z.record(\n      z.string().describe('气运名'),\n      z.object({\n        类型: z.coerce.string().prefault('被动'),\n        效果: z.coerce.string().prefault(''),\n        使用状态: z.coerce.string().prefault('常驻'),\n        压制状态: z.coerce.string().prefault('正常'),\n      })\n    ).prefault({}),\n    灵根: z.string().prefault('未知'),\n    状态: z.string().prefault('无异常'),\n    炼丹: z.object({\n      阶级: z.string().catch('未入门').prefault('未入门'),\n      熟练度: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      成功率: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      次数: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : v)).prefault(0),\n    }).catch({}).prefault({}),\n    炼器: z.object({\n      阶级: z.string().catch('未入门').prefault('未入门'),\n      熟练度: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      成功率: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      次数: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : v)).prefault(0),\n    }).catch({}).prefault({}),\n    储物袋: z.record(\n      z.string().describe('物品名'),\n      z.object({\n        描述: z.string().prefault(''),\n        数量: z.coerce.number().catch(1).prefault(1),\n      })\n    ).prefault({})\n     .transform(data => _.pickBy(data, ({ 数量 }) => 数量 > 0)),\n    功法: z.record(\n      z.string().describe('功法名'),\n      z.object({\n        类型: z.string().prefault('未知'),\n        境界: z.string().prefault('未入门'),\n        熟练度: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n        描述: z.string().prefault(''),\n      })\n    ).prefault({}),\n    器物: z.record(\n      z.string().describe('器物名'),\n      z.object({\n        等级: z.string().prefault('未知'),\n        类型: z.string().prefault('未知'),\n        损耗度: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n        状态: z.string().prefault('正常'),\n        描述: z.string().prefault(''),\n      })\n    ).prefault({}),\n  }).catch({}).prefault({}),\n\n  道侣: z.record(\n    z.string().describe('道侣姓名'),\n    z.object({\n      性别: z.string().prefault('未知'),\n      种族: z.string().prefault('人族'),\n      状态: z.string().prefault('正常'),\n      境界: z.string().prefault('未知'),\n      亲密: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      生命: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      灵力: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      修为: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      道心: z.coerce.number().catch(50).transform(v => (isNaN(v) ? 50 : _.clamp(v, 0, 100))).prefault(50),\n      性格: z.string().prefault('未知'),\n      外观: z.string().prefault('未知'),\n      身高: z.coerce.string().prefault('未知'),\n      背景: z.string().prefault(''),\n      神通: z.string().prefault('无'),\n      心声: z.string().prefault('无'),\n    })\n  ).catch({}).prefault({}),\n\n  灵宠: z.record(\n    z.string().describe('灵宠姓名'),\n    z.object({\n      性别: z.string().prefault('未知'),\n      种族: z.string().prefault('未知'),\n      境界: z.string().prefault('未知'),\n      生命: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      灵力: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      修为: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      亲密度: z.coerce.number().catch(50).transform(v => (isNaN(v) ? 50 : _.clamp(v, 0, 100))).prefault(50),\n      性格: z.string().prefault('未知'),\n      容貌外观: z.string().prefault('未知'),\n      神通: z.string().prefault('无'),\n      状态: z.string().prefault('正常'),\n      心声: z.string().prefault('无'),\n    })\n  ).catch({}).prefault({}),\n\n  人物: z.record(\n    z.string().describe('NPC姓名'),\n    z.object({\n      性别: z.string().prefault('未知'),\n      头衔: z.string().prefault(''),\n      境界: z.string().prefault('未知'),\n      好感: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      关系阶段: z.string().prefault('陌生'),\n      生命: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      灵力: z.coerce.number().catch(100).transform(v => (isNaN(v) ? 100 : _.clamp(v, 0, 100))).prefault(100),\n      修为: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      道心: z.coerce.number().catch(50).transform(v => (isNaN(v) ? 50 : _.clamp(v, 0, 100))).prefault(50),\n      性格: z.string().prefault('未知'),\n      描述: z.string().prefault(''),\n    })\n  ).catch({}).prefault({}),\n\n  机遇: z.record(\n    z.string().describe('任务名'),\n    z.object({\n      难度: z.string().prefault('未知'),\n      目标: z.string().prefault(''),\n      机缘: z.string().prefault(''),\n      引言: z.string().prefault(''),\n    })\n  ).catch({}).prefault({})\n   .transform(data => _(data).entries().takeRight(20).fromPairs().value()),\n\n  绝色榜: z.record(\n    z.string().describe('仙子姓名'),\n    z.object({\n      排名: z.coerce.string().prefault('未知'),\n      头衔: z.string().prefault(''),\n      仙姿: z.string().prefault(''),\n      群芳谱: z.string().prefault(''),\n    })\n  ).catch({}).prefault({}),\n\n  玉简: z.record(\n    z.string().describe('好友姓名'),\n    z.object({\n      性别: z.string().prefault('未知'),\n      境界: z.string().prefault('未知'),\n      关系: z.string().prefault('陌生'),\n      好感度: z.coerce.number().catch(0).transform(v => (isNaN(v) ? 0 : _.clamp(v, 0, 100))).prefault(0),\n      历史记录: z.record(\n        z.string().describe('消息标识'),\n        z.object({\n          发送者: z.string().prefault('未知'),\n          时间: z.string().prefault(''),\n          内容: z.string().prefault(''),\n        })\n      ).prefault({})\n       .transform(data => _(data).entries().takeRight(100).fromPairs().value()),\n    })\n  ).catch({}).prefault({}),\n\n  $器灵台词: z.array(z.string()).prefault([]),\n});\n\n$(() => {\n  registerMvuSchema(Schema);\n});",
+      "data": {},
+      "enabled": true,
+      "export_with": {
+        "button": true,
+        "data": true
+      },
+      "id": "fc83c3a3-0bc0-4170-a36a-f40f773204ab",
+      "info": "",
+      "name": "ZOD",
+      "type": "script"
+    },
+    {
+      "button": {
+        "buttons": [],
+        "enabled": true
+      },
+      "content": "import 'https://testingcf.jsdelivr.net/gh/NLKASHEI/114514@v1.3.0/道渊配置小助手.min.js'",
+      "data": {},
+      "enabled": true,
+      "export_with": {
+        "button": true,
+        "data": true
+      },
+      "id": "3bb34570-f0ea-4632-ad2d-84bae6343219",
+      "info": "",
+      "name": "道渊配置助手",
+      "type": "script"
+    },
+    {
+      "button": {
+        "buttons": [],
+        "enabled": true
+      },
+      "content": "import('https://cdn.daoyuan.mayuworld.com/scripts/prod/latest/daoyuan-term-widget.min.js');",
+      "data": {},
+      "enabled": true,
+      "export_with": {
+        "button": true,
+        "data": true
+      },
+      "id": "d556bd75-8bfe-48e8-b4cb-a7b177a95b0c",
+      "info": "",
+      "name": "道渊Wiki",
+      "type": "script"
+    }
+  ],
+  "variables": {
+    "phone_data": {
+      "_exportMeta": {
+        "exportedAt": 1774095315901,
+        "source": "phone_settings_edit",
+        "version": "1.0"
+      },
+      "backgrounds": [
+        "https://files.catbox.moe/r08d2g.jpg",
+        "https://files.catbox.moe/c3qnwf.jpg",
+        "https://files.catbox.moe/hx3w9g.jpg",
+        "https://files.catbox.moe/8ro986.jpg",
+        "https://files.catbox.moe/frcl2b.jpg",
+        "https://files.catbox.moe/90nlol.jpg",
+        "https://files.catbox.moe/0vj486.jpg",
+        "https://files.catbox.moe/nytecs.jpg",
+        "https://files.catbox.moe/c6x295.jpg",
+        "https://files.catbox.moe/3l9m1t.jpg",
+        "https://files.catbox.moe/99nn6m.jpg",
+        "https://files.catbox.moe/vb4v46.jpg",
+        "https://files.catbox.moe/cjkuqo.jpg",
+        "https://files.catbox.moe/c2hsr6.jpg"
+      ],
+      "characters": [
+        {
+          "avatar": "https://files.catbox.moe/arh2ub.JPG",
+          "chatBg": "https://files.catbox.moe/r08d2g.jpg",
+          "dynamicBg": "https://files.catbox.moe/r08d2g.jpg",
+          "email": "character1774095231444@example.com",
+          "id": "1774095231444",
+          "name": "灵玥",
+          "nickname": "昵称",
+          "onlineStyle": ""
+        },
+        {
+          "avatar": "https://files.catbox.moe/arh2ub.JPG",
+          "chatBg": "https://files.catbox.moe/r08d2g.jpg",
+          "dynamicBg": "https://files.catbox.moe/r08d2g.jpg",
+          "email": "character1774095299072@example.com",
+          "id": "1774095299072",
+          "name": "秦心",
+          "nickname": "昵称",
+          "onlineStyle": ""
+        }
+      ],
+      "fonts": [
+        {
+          "name": "linja waso",
+          "url": "https://fontsapi.zeoseven.com/230/main/result.css"
+        },
+        {
+          "name": "GenWanMin2 TC R",
+          "url": "https://fontsapi.zeoseven.com/301/main/result.css"
+        },
+        {
+          "name": "Fusion Pixel 12px M latin",
+          "url": "https://fontsapi.zeoseven.com/570/main/result.css"
+        },
+        {
+          "name": "KingHwaOldSong",
+          "url": "https://fontsapi.zeoseven.com/309/main/result.css"
+        },
+        {
+          "name": "LXGW WenKai",
+          "url": "https://fontsapi.zeoseven.com/292/main/result.css"
+        }
+      ],
+      "groups": [],
+      "map": {
+        "districts": [],
+        "name": ""
+      },
+      "music": [
+        {
+          "artist": "Cat & Calmell",
+          "title": "dramatic",
+          "url": "https://files.catbox.moe/3420bl.mp3"
+        },
+        {
+          "artist": "8bite,Dyrox",
+          "title": "frozen heart",
+          "url": "https://files.catbox.moe/743jsi.mp3"
+        },
+        {
+          "artist": "Cafuné",
+          "title": "Tek It",
+          "url": "https://files.catbox.moe/7dw7ap.mp3"
+        },
+        {
+          "artist": "FIFTY FIFTY",
+          "title": "Cupid",
+          "url": "https://files.catbox.moe/zx01oj.mp3"
+        },
+        {
+          "artist": "elijah woods",
+          "title": "247, 365",
+          "url": "https://files.catbox.moe/wv5h2s.mp3"
+        },
+        {
+          "artist": "Johnny Stimson",
+          "title": "Butterflies",
+          "url": "https://files.catbox.moe/ms4bkd.mp3"
+        },
+        {
+          "artist": "entoy,suru",
+          "title": "Blue mood",
+          "url": "https://files.catbox.moe/mwmsfs.mp3"
+        },
+        {
+          "artist": "Hayd",
+          "title": "Head In The Clouds",
+          "url": "https://files.catbox.moe/zipm4q.mp3"
+        },
+        {
+          "artist": "佐藤千亜妃",
+          "title": "S.S.S",
+          "url": "https://files.catbox.moe/q85nld.mp3"
+        },
+        {
+          "artist": "Edo_Ame江户糖,草食考拉",
+          "title": "クリームソーダとシャンデリア",
+          "url": "https://files.catbox.moe/77bcql.mp3"
+        },
+        {
+          "artist": "JVKE",
+          "title": "golden hour",
+          "url": "https://files.catbox.moe/2z7gw8.mp3"
+        },
+        {
+          "artist": "當山みれい",
+          "title": "^^",
+          "url": "https://files.catbox.moe/t8a2t3.mp3"
+        },
+        {
+          "artist": "あれくん,『ユイカ』",
+          "title": "あのね。",
+          "url": "https://files.catbox.moe/78ewdt.mp3"
+        },
+        {
+          "artist": "宇多田ヒカル",
+          "title": "One Last Kiss",
+          "url": "https://files.catbox.moe/iq4gp4.mp3"
+        },
+        {
+          "artist": "HYBS",
+          "title": "Tip Toe",
+          "url": "https://files.catbox.moe/je7m32.mp3"
+        },
+        {
+          "artist": "keshi",
+          "title": "2 soon",
+          "url": "https://files.catbox.moe/42xbhu.mp3"
+        },
+        {
+          "artist": "ROSÉ",
+          "title": "Gone",
+          "url": "https://files.catbox.moe/dyxukt.mp3"
+        },
+        {
+          "artist": "LANY",
+          "title": "anything 4 u",
+          "url": "https://files.catbox.moe/1xd69s.mp3"
+        },
+        {
+          "artist": "落日飞车,Michael Seyer",
+          "title": "Jellyfish",
+          "url": "https://files.catbox.moe/xvb9h2.mp3"
+        },
+        {
+          "artist": "keshi",
+          "title": "LIMBO",
+          "url": "https://files.catbox.moe/yvl6y4.mp3"
+        },
+        {
+          "artist": "MyGO!!!!!",
+          "title": "春日影",
+          "url": "https://files.catbox.moe/8i9f9c.mp3"
+        },
+        {
+          "artist": "RADWIMPS",
+          "title": "前前前世 (movie ver.)",
+          "url": "https://files.catbox.moe/ms9sq7.mp3"
+        },
+        {
+          "artist": "『ユイカ』",
+          "title": "17さいのうた。",
+          "url": "https://files.catbox.moe/lq2yf0.mp3"
+        },
+        {
+          "artist": "『ユイカ』",
+          "title": "好きだから。",
+          "url": "https://files.catbox.moe/2kafzb.mp3"
+        },
+        {
+          "artist": "瀬名航,鎖那",
+          "title": "ひとり旅",
+          "url": "https://files.catbox.moe/2cin5o.mp3"
+        }
+      ],
+      "randomAvatars": [
+        "https://files.catbox.moe/arh2ub.JPG",
+        "https://files.catbox.moe/7eb3q3.JPG",
+        "https://files.catbox.moe/o5ana8.JPG",
+        "https://files.catbox.moe/0ihdnf.JPG",
+        "https://files.catbox.moe/8zru9e.JPG",
+        "https://files.catbox.moe/n4uy3d.JPG"
+      ],
+      "user": {
+        "avatar": "https://files.catbox.moe/wd52xn.JPG",
+        "bio": "",
+        "chatListBg": "https://files.catbox.moe/r08d2g.jpg",
+        "email": "user@gmail.com",
+        "font": "LXGW WenKai",
+        "id": "user",
+        "name": "玖神",
+        "nickname": "",
+        "phoneBg": "https://files.catbox.moe/c3qnwf.jpg",
+        "state": "在线"
+      }
+    }
+  }
+}

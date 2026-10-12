@@ -1,0 +1,175 @@
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{--bg:#0d1220;--card:#151d31;--line:#2a3a5e;--gold:#d4af37;--txt:#e8e6df;--dim:#8b94a8;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:"Noto Serif SC","Microsoft YaHei",serif;padding:10px;line-height:1.55}
+  .card{background:linear-gradient(180deg,rgba(212,175,55,.06),transparent 30%),var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .hd{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;border-bottom:1px dashed var(--line);padding-bottom:8px;margin-bottom:8px}
+  .name{color:var(--gold);font-weight:700;font-size:1.15em;letter-spacing:1px}
+  .realm{color:#c58aff;font-size:.95em}
+  .clan{color:var(--dim);font-size:.85em}
+  .crisis{margin-left:auto;font-size:.8em;padding:1px 10px;border-radius:10px;border:1px solid var(--line);color:var(--dim)}
+  .crisis.lv1{color:#6fd49a;border-color:rgba(111,212,154,.4)}
+  .crisis.lv2{color:#ffb066;border-color:rgba(255,176,102,.4)}
+  .crisis.lv3{color:#ff7a6b;border-color:rgba(255,122,107,.5)}
+  .meta{color:var(--dim);font-size:.8em;margin-bottom:8px;word-break:break-all}
+  .bars{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:8px}
+  .bar .t{display:flex;justify-content:space-between;font-size:.78em;color:var(--dim)}
+  .bar .t b{color:var(--txt);font-weight:600}
+  .track{height:7px;background:#0b101c;border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:2px}
+  .fill{height:100%;border-radius:3px;transition:width .4s}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+  .chip{font-size:.78em;padding:2px 10px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.2);color:var(--dim)}
+  .chip.gold{color:var(--gold);border-color:rgba(212,175,55,.4)}
+  .chip.bad{color:#ff7a6b;border-color:rgba(255,122,107,.5)}
+  details{border:1px solid var(--line);border-radius:7px;margin-bottom:6px;background:rgba(0,0,0,.15)}
+  summary{cursor:pointer;padding:6px 10px;font-size:.88em;color:var(--gold);letter-spacing:1px;user-select:none}
+  summary .n{color:var(--dim);font-size:.85em;letter-spacing:0}
+  .bd{padding:2px 10px 8px;font-size:.85em}
+  .row{display:flex;gap:8px;padding:3px 0;border-bottom:1px dotted rgba(42,58,94,.4);flex-wrap:wrap}
+  .row:last-child{border-bottom:none}
+  .row .k{color:#c58aff;min-width:0;flex-shrink:0}
+  .row .v{color:var(--dim);flex:1;min-width:120px;word-break:break-word}
+  .ft{text-align:center;color:#5b6478;font-size:.72em;margin-top:6px;letter-spacing:2px}
+  .err{color:#ff7a6b;font-size:.9em;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<div id="sb" class="card">状态栏加载中……</div>
+<script>
+(function () {
+  var root = document.getElementById('sb');
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function waitMvu(cb) {
+    var n = 0;
+    (function poll() {
+      if (window.Mvu && typeof window.Mvu.getMvuData === 'function') return cb(true);
+      if (++n > 40) return cb(false);
+      setTimeout(poll, 500);
+    })();
+  }
+  function getMsgId() {
+    try { if (typeof getCurrentMessageId === 'function') return getCurrentMessageId(); } catch (e) {}
+    return null;
+  }
+  function fetchData() {
+    var id = getMsgId();
+    var d = id != null
+      ? window.Mvu.getMvuData({ type: 'message', message_id: id })
+      : window.Mvu.getMvuData({ type: 'message' });
+    return (d && d.stat_data) || {};
+  }
+  function bar(label, val, color, note) {
+    var v = Math.max(0, Math.min(100, Number(val) || 0));
+    return '<div class="bar"><div class="t"><span>' + label + (note ? '<i style="font-style:normal;color:#c58aff"> ' + esc(note) + '</i>' : '') + '</span><b>' + v + '</b></div>' +
+      '<div class="track"><div class="fill" style="width:' + v + '%;background:' + color + '"></div></div></div>';
+  }
+  function section(title, inner, count) {
+    if (!inner) return '';
+    return '<details><summary>' + title + ' <span class="n">' + (count != null ? count : '') + '</span></summary><div class="bd">' + inner + '</div></details>';
+  }
+  function row(k, v) {
+    if (!v) return '';
+    return '<div class="row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>';
+  }
+  function daoStage(v) { return v <= 25 ? '凡心' : v <= 50 ? '初窥' : v <= 75 ? '澄澈' : '磐石'; }
+  var CRISIS = { '无': '', '低': 'lv1', '中': 'lv2', '高': 'lv3', '致命': 'lv3' };
+
+  function render(sd) {
+    var W = sd['世界'] || {}, P = sd['主角'] || {};
+    var crisis = String(W['危机程度'] || '无');
+    var html = '';
+    html += '<div class="hd"><span class="name">' + esc(P['姓名'] || '修士') + '</span>' +
+      '<span class="realm">' + esc(P['境界'] || '凡人') + '</span>' +
+      (P['宗门'] ? '<span class="clan">' + esc(P['宗门']) + '</span>' : '') +
+      '<span class="crisis ' + (CRISIS[crisis] || '') + '">危机·' + esc(crisis) + '</span></div>';
+    html += '<div class="meta">🕛 ' + esc(W['当前时间'] || '未知') + '　📍 ' + esc(W['当前地点'] || '未知') + '</div>';
+
+    var xiufu = Number(P['修为']) || 0;
+    html += '<div class="bars">';
+    html += bar('生命', P['生命'], '#e05555');
+    html += bar('灵力', P['灵力'], '#5aa9ff');
+    html += bar('精血', P['精血'], '#b0453a');
+    html += bar('神识', P['神识'], '#c58aff');
+    html += bar('修为', xiufu, '#d4af37', xiufu >= 100 ? '（瓶颈）' : '');
+    html += bar('道心', P['道心'], '#6fd49a', daoStage(Number(P['道心']) || 0));
+    html += '</div>';
+
+    html += '<div class="chips">';
+    if (P['灵根']) html += '<span class="chip gold">灵根·' + esc(P['灵根']) + '</span>';
+    if (P['状态'] && P['状态'] !== '无异常') html += '<span class="chip bad">状态·' + esc(P['状态']) + '</span>';
+    if (P['神念'] && P['神念'] !== '无') html += '<span class="chip">神念·' + esc(P['神念']) + '</span>';
+    html += '</div>';
+
+    var qy = P['气运'] || {}, q = '';
+    for (var k in qy) {
+      var o = qy[k] || {};
+      q += row('【' + esc(k) + '】', esc(o['效果'] || '') + (o['使用状态'] ? ' <i style="font-style:normal;color:#6fd49a">[' + esc(o['使用状态']) + ']</i>' : ''));
+    }
+    html += section('☯ 气运', q, Object.keys(qy).length || '');
+
+    var gf = P['功法'] || {}, g = '';
+    for (var k2 in gf) {
+      var f = gf[k2] || {};
+      g += row('《' + esc(k2) + '》', esc(f['类型'] || '') + (f['境界'] ? ' · ' + esc(f['境界']) : '') + (f['熟练度'] != null ? ' · 熟练' + esc(f['熟练度']) + '%' : ''));
+    }
+    html += section('📖 功法', g, Object.keys(gf).length || '');
+
+    var dl = sd['道侣'] || {}, d2 = '';
+    for (var k3 in dl) {
+      var c = dl[k3] || {};
+      d2 += row(esc(k3), esc(c['境界'] || '?') + ' · 亲密 ' + esc(c['亲密'] != null ? c['亲密'] : '?') + (c['状态'] && c['状态'] !== '正常' ? ' · <span style="color:#ff7a6b">' + esc(c['状态']) + '</span>' : ''));
+    }
+    html += section('💞 道侣', d2, Object.keys(dl).length || '');
+
+    var lw = sd['灵宠'] || {}, lw2 = '';
+    for (var k5 in lw) {
+      var pet = lw[k5] || {};
+      lw2 += row(esc(k5), esc(pet['种族'] || '') + ' · ' + esc(pet['境界'] || '?') + ' · 亲密 ' + esc(pet['亲密度'] != null ? pet['亲密度'] : '?'));
+    }
+    html += section('🐾 灵宠', lw2, Object.keys(lw).length || '');
+
+    var pp = sd['人物'] || {}, p2 = '';
+    for (var k4 in pp) {
+      var pc = pp[k4] || {};
+      p2 += row(esc(k4), esc(pc['头衔'] || '') + (pc['境界'] ? ' · ' + esc(pc['境界']) : '') + ' · 好感 ' + esc(pc['好感'] != null ? pc['好感'] : '?') + (pc['关系阶段'] ? '（' + esc(pc['关系阶段']) + '）' : ''));
+    }
+    html += section('👤 人物', p2, Object.keys(pp).length || '');
+
+    var bag = P['储物袋'] || {}, b = '';
+    for (var k6 in bag) {
+      var it = bag[k6] || {};
+      b += row(esc(k6), esc(it['描述'] || '') + (it['数量'] != null ? ' ×' + esc(it['数量']) : ''));
+    }
+    html += section('🎒 储物袋', b, Object.keys(bag).length || '');
+
+    html += '<div class="ft">道 渊 · 精 简 状 态 栏</div>';
+    root.innerHTML = html;
+  }
+
+  waitMvu(function (ok) {
+    if (!ok) { root.innerHTML = '<div class="err">未检测到 MVU 框架，状态栏不可用</div>'; return; }
+    try {
+      render(fetchData());
+      try {
+        if (window.Mvu.event && typeof window.Mvu.event.on === 'function' && window.Mvu.event.VARIABLE_UPDATE_ENDED != null) {
+          window.Mvu.event.on(window.Mvu.event.VARIABLE_UPDATE_ENDED, function () {
+            try { render(fetchData()); } catch (e) {}
+          });
+        }
+      } catch (e) {}
+    } catch (e) {
+      root.innerHTML = '<div class="err">状态栏渲染失败：' + esc(e.message) + '</div>';
+    }
+  });
+})();
+</script>
+</body>
+</html>
+```
