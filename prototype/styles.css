@@ -241,8 +241,10 @@ button { background: none; border: 0; cursor: pointer; }
 .sb-head .t { flex: 1; color: var(--gold); letter-spacing: 3px; }
 .sb-head .close { min-width: var(--tap); min-height: var(--tap); display: grid; place-items: center; color: var(--dim); font-size: 1.3rem; }
 .side-collapse { display: none; min-width: 38px; min-height: 38px; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.9rem; }
-.rail-toggle { display: none; min-width: 38px; min-height: 38px; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.95rem; }
-#app[data-layout="tablet"] .rail-toggle { display: grid; }
+/* 注意选择器要带 .hud：按钮同时有 .iconbtn，而 .hud .iconbtn(0,2,0) 会盖掉 .rail-toggle(0,1,0)，
+   手机上就会露出这个本该只在平板出现的按钮（真机上实测到了）。 */
+.hud .rail-toggle { display: none; min-width: 38px; min-height: 38px; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.95rem; }
+#app[data-layout="tablet"] .hud .rail-toggle { display: grid; }
 /* 面板 tab：手机分「常用 / 更多」两组，平板单行横滑 */
 .sb-tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .sb-tabs .g-label { color: var(--faint); font-size: 0.68rem; letter-spacing: 1px; margin-right: 2px; flex: 0 0 auto; }
