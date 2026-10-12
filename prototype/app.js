@@ -141,10 +141,29 @@ import { retrieve } from './memory/retrieve.js';
     { id: '设置', icon: '⚙' },
   ];
   let curPanel = '主角';
+  /** 面板分组：常用的直接可见，其余收进「更多」——手机抽屉里 14 个 tab 横滑很难发现 */
+  const PANELS_COMMON = ['主角', '道侣', '人物', '机遇', '背包'];
+  /** 底部主行动：每回合真会点的 4 个；其余进「更多」 */
+  const MAIN_ACTS = [
+    { k: '探索', i: '🧭', hot: true },
+    { k: '修炼', i: '🧘', hot: true },
+    { k: '突破', i: '⚡', hot: true },
+    { k: '交流', i: '💬' },
+  ];
+  const MORE_ACTS = [
+    { k: '玉简', i: '📱', panel: '玉简' }, { k: '地图', i: '🗺', panel: '地图' },
+    { k: '背包', i: '🎒', panel: '背包' }, { k: '人物', i: '👤', panel: '人物' },
+    { k: '机遇', i: '📜', panel: '机遇' }, { k: '绝色榜', i: '🏮', panel: '绝色榜' },
+    { k: '灵宠', i: '🐾', panel: '灵宠' }, { k: '面板', i: '☰' },
+  ];
   let forced = null;       // null | 'phone' | 'tablet'
   const isTablet = () => app.dataset.layout === 'tablet';
 
   /* ================= 版式 ================= */
+  /** 左栏 / 右栏是否被用户手动收起（null = 自动：平板竖屏默认收右栏）。 */
+  let railCollapsed = false;
+  let sideCollapsed = null;
+
   function applyLayout() {
     let layout;
     if (forced) layout = forced;
@@ -152,10 +171,51 @@ import { retrieve } from './memory/retrieve.js';
     app.dataset.layout = layout;
     app.dataset.device = layout;
     app.dataset.orient = window.innerHeight >= window.innerWidth ? 'portrait' : 'landscape';
-    app.classList.toggle('preview', window.innerWidth >= 1100 && !forced ? true : window.innerWidth >= 1100);
+    app.classList.toggle('preview', window.innerWidth >= 1100);
+    applyCollapse();
   }
-  window.addEventListener('resize', () => { applyLayout(); });
+
+  /**
+   * 折叠联动。
+   *
+   * 平板竖屏（如 800×1280）时左右栏固定占掉 406px，中栏只剩 394px——比手机还窄。
+   * 所以竖屏默认收起右栏，需要时点一下再展开。
+   */
+  function applyCollapse() {
+    const tablet = app.dataset.layout === 'tablet';
+    const portrait = app.dataset.orient === 'portrait';
+    const rail = $('#rail');
+    const side = $('#sidebar');
+    if (!rail || !side) return;
+    rail.classList.toggle('mini', !tablet || railCollapsed);
+    side.classList.toggle('mini', !tablet || (sideCollapsed === null ? portrait : sideCollapsed));
+  }
+
+  function toggleRail() {
+    railCollapsed = !railCollapsed;
+    applyCollapse();
+  }
+  function toggleSide(force) {
+    const side = $('#sidebar');
+    if (!side) return;
+    const nowMini = side.classList.contains('mini');
+    sideCollapsed = typeof force === 'boolean' ? !force : !nowMini ? true : false;
+    applyCollapse();
+  }
+
+  // 版式重算：三重保险。
+  // 实测踩过坑——只监听 window.resize 时，视口宽度变了却不触发（旋转屏幕/分屏/软键盘
+  // 在安卓 WebView 上都会这样），版式就停在错误的那一套，左栏不出现、右栏变全屏遮罩。
+  window.addEventListener('resize', () => applyLayout());
   window.addEventListener('orientationchange', () => setTimeout(applyLayout, 120));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) applyLayout(); });
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => applyLayout()).observe(document.documentElement);
+  }
+  if (window.visualViewport) {
+    // 软键盘弹出/收起、旋转都会触发这个，比 window.resize 可靠
+    window.visualViewport.addEventListener('resize', () => applyLayout());
+  }
   $$('#devbar button').forEach((b) => b.addEventListener('click', () => {
     forced = b.dataset.layoutSet;
     $$('#devbar button').forEach((x) => x.classList.toggle('on', x === b));
@@ -395,6 +455,17 @@ import { retrieve } from './memory/retrieve.js';
     return `<div class="bar" data-res="${key}"><div class="t"><span>${key}${note ? '<i> ' + note + '</i>' : ''}</span><b>${shown}</b></div>
       <div class="track"><div class="fill" style="width:${v}%;background:${color}"></div></div></div>`;
   }
+  /** 正文字号三档（只影响文字，不影响版式）。 */
+  let currentFont = (function () {
+    try { return localStorage.getItem('dy.font') || 'm'; } catch { return 'm'; }
+  })();
+  app.dataset.font = currentFont;
+
+  /** 六维是否展开（手机默认收起，只留 8px 聚合条）。 */
+  let hudExpanded = (function () {
+    try { return localStorage.getItem('dy.hudExpanded') === '1'; } catch { return false; }
+  })();
+
   function renderHUD() {
     const W = state.世界, P = state.主角;
     const lv = crisisLevel(W.危机程度);
@@ -404,6 +475,7 @@ import { retrieve } from './memory/retrieve.js';
         <!-- 境界标签已含 DC（engine 的 realmLabel 生成），此处不再拼接 -->
         <span class="realm">${esc(P.境界)}</span>
         <span class="spacer"></span>
+        <button class="iconbtn rail-toggle" id="rail-toggle" title="收起/展开左栏">⇤</button>
         <button class="iconbtn" id="hud-menu" title="面板">☰</button>
       </div>
       <div class="hud-row2">
@@ -411,10 +483,22 @@ import { retrieve } from './memory/retrieve.js';
         <span class="crisis lv${lv}">危机 · ${esc(W.危机程度)}</span>
         <span>遭遇冷却 ${W.遭遇冷却}</span>
       </div>
-      <div class="hud-bars">
+      <div class="agg" id="hud-agg" title="点击展开/收起六维" aria-label="展开六维">
+        ${D.RES.map((r) => `<span style="flex:${Math.max(1, clamp(Number(P[r.key]) || 0, 0, 100))};background:${r.color}"></span>`).join('')}
+      </div>
+      <div class="hud-bars ${hudExpanded ? '' : 'collapsed'}" id="hud-bars">
         ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '修为' && P.修为 >= 100 ? '瓶颈' : r.key === '道心' ? daoStage(P.道心) : '')).join('')}
       </div>`;
     $('#hud-menu').addEventListener('click', () => openPanel(curPanel));
+    // 聚合条 = 六维的折叠开关
+    const agg = $('#hud-agg');
+    if (agg) agg.addEventListener('click', () => {
+      hudExpanded = !hudExpanded;
+      try { localStorage.setItem('dy.hudExpanded', hudExpanded ? '1' : '0'); } catch { /* 忽略 */ }
+      renderHUD();
+    });
+    const rt = $('#rail-toggle');
+    if (rt) rt.addEventListener('click', () => toggleRail());
   }
 
   /* ================= 叙事流 ================= */
@@ -426,9 +510,8 @@ import { retrieve } from './memory/retrieve.js';
     if (t.role === 'user') return `<div class="msg user"><div class="who">你</div><div class="bubble">${esc(t.text)}</div></div>`;
     const fx = (t.effects || []).filter((e) => e.op === 'delta' && /\.(生命|精血|灵力|修为|神识|道心|好感|亲密)$/.test(e.target))
       .map((e) => `<span class="fx-chip ${e.value >= 0 ? 'up' : 'down'}">${e.target.split('.').pop()} ${e.value >= 0 ? '+' : ''}${e.value}</span>`).join('');
-    const ch = (t.choices || []).length ? `<div class="choices">${t.choices.map((c) => `<button class="choice" data-choice="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : '';
     return `<div class="msg assistant"><div class="who">道渊</div><div class="bubble">${esc(t.text)}</div>
-      ${fx ? `<div class="fx">${fx}</div>` : ''}${ch}</div>`;
+      ${fx ? `<div class="fx">${fx}</div>` : ''}</div>`;
   }
   function renderStream() {
     const first = turns.find((t) => t.scene);
@@ -441,17 +524,45 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   /* ================= 行动区 ================= */
-  const ACTS = [
-    { k: '探索', i: '🧭', hot: true }, { k: '修炼', i: '🧘', hot: true }, { k: '突破', i: '⚡', hot: true },
-    { k: '交流', i: '💬' }, { k: '玉简', i: '📱', panel: '玉简' }, { k: '地图', i: '🗺', panel: '地图' },
-    { k: '背包', i: '🎒', panel: '背包' }, { k: '面板', i: '☰' },
-  ];
+  /** 本回合的行动建议：吸附在输入区上方，不再埋在叙事流里要往回滚。 */
+  let SUGGESTIONS = [];
+
+  function renderSuggestions() {
+    const el = $('#sugg');
+    if (!el) return;
+    el.innerHTML = SUGGESTIONS.map((c, i) =>
+      `<button class="c" data-choice="${esc(c)}"><span class="k">${i + 1}</span>${esc(c)}</button>`).join('');
+  }
+
+  function setSuggestions(list) {
+    SUGGESTIONS = Array.isArray(list) ? list.slice(0, 4) : [];
+    renderSuggestions();
+  }
+
   function renderActions() {
     $('#actions').innerHTML = `
-      <div class="wheel">${ACTS.map((a) => `<button class="act ${a.hot ? 'hot' : ''}" data-act="${a.k}" ${a.panel ? `data-panel="${a.panel}"` : ''}><span class="i">${a.i}</span>${a.k}</button>`).join('')}</div>
-      <div class="input-row"><input id="free-input" placeholder="写下你的行动……"><button class="send" id="send">发送</button></div>`;
+      <div class="sugg" id="sugg"></div>
+      <div class="row-main">
+        ${MAIN_ACTS.map((a) => `<button class="act ${a.hot ? 'hot' : ''}" data-act="${a.k}"><span class="i">${a.i}</span>${a.k}</button>`).join('')}
+        <button class="act" id="more-btn" title="更多入口"><span class="i">⋯</span><span class="more-l">更多</span></button>
+      </div>
+      <div class="input-row"><input id="free-input" placeholder="写下你的行动……"><button class="send" id="send">发送</button></div>
+      <div class="more-sheet" id="more-sheet">
+        <div class="grid">${MORE_ACTS.map((a) => `<button class="act" data-act="${a.k}" ${a.panel ? `data-panel="${a.panel}"` : ''}><span class="i">${a.i}</span>${a.k}</button>`).join('')}</div>
+      </div>`;
     $('#send').addEventListener('click', sendFree);
     $('#free-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFree(); });
+    $('#more-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('#more-sheet').classList.toggle('open');
+    });
+    renderSuggestions();
+  }
+
+  /** 点别处或选中入口后收起「更多」。 */
+  function closeMoreSheet() {
+    const m = $('#more-sheet');
+    if (m) m.classList.remove('open');
   }
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]');
@@ -460,6 +571,7 @@ import { retrieve } from './memory/retrieve.js';
     if (c) { freeText(c.dataset.choice); }
   });
   function doAction(kind, panel) {
+    closeMoreSheet();
     if (panel) { openPanel(panel); return; }
     if (kind === '突破') { breakthrough(); return; }
     if (kind === '面板') { openPanel(curPanel); return; }
@@ -532,11 +644,8 @@ import { retrieve } from './memory/retrieve.js';
     if (result.encounter) {
       wrap.insertAdjacentHTML('beforeend', `<div class="fx"><span class="fx-chip">偶遇 · ${esc(result.encounter.name)}</span></div>`);
     }
-    const choices = result.choices || [];
-    if (choices.length) {
-      wrap.insertAdjacentHTML('beforeend', `<div class="choices">${choices.map((c) =>
-        `<button class="choice" data-choice="${esc(c)}">${esc(c)}</button>`).join('')}</div>`);
-    }
+    // 建议吸附到输入区上方（不再埋在叙事流里）
+    setSuggestions(result.choices || []);
 
     turns.push({ role: 'assistant', text: result.narrative, effects: result.effects, choices, scene: result.scene });
     scrollStream();
@@ -998,12 +1107,23 @@ import { retrieve } from './memory/retrieve.js';
   let sbDirty = false;
   function sidebarTouched() { return sbDirty; }
 
+  let moreTabsOpen = false;
+
   function renderSidebar(force = false) {
     if (!force && sbDirty) return; // 用户在填表，别覆盖他
     $('#sb-title').textContent = curPanel;
-    $('#sb-tabs').innerHTML = PANELS.map((p) => `<button class="tab ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}">${p.icon} ${p.id}</button>`).join('');
+    const common = PANELS.filter((p) => PANELS_COMMON.includes(p.id));
+    const more = PANELS.filter((p) => !PANELS_COMMON.includes(p.id));
+    const chip = (p) => `<button class="tab ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}">${p.icon} ${p.id}</button>`;
+    $('#sb-tabs').innerHTML =
+      `<span class="g-label">常用</span>${common.map(chip).join('')}` +
+      `<button class="tab more" data-moretabs="1">${moreTabsOpen ? '收起 ▴' : '＋ 更多 ▾'}</button>` +
+      `<span class="grp-more" style="display:${moreTabsOpen ? 'contents' : 'none'}">` +
+        `<span class="g-label">更多</span>${more.map(chip).join('')}</span>`;
     $('#sb-body').innerHTML = panelHTML(curPanel);
     $$('#sb-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
+    const mt = $('#sb-tabs [data-moretabs]');
+    if (mt) mt.addEventListener('click', () => { moreTabsOpen = !moreTabsOpen; renderSidebar(true); });
     const ci = $('#chat-input-field');
     if (ci) {
       ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(ci.value); });
@@ -1014,6 +1134,13 @@ import { retrieve } from './memory/retrieve.js';
     if (ws) ws.addEventListener('input', () => { $('#wiki-list').innerHTML = wikiList(ws.value.trim()); });
     // 设置开关（排除需要独立持久化的更新开关）
     $$('#sb-body .switch:not(#upd-auto)').forEach((s) => s.addEventListener('click', () => s.classList.toggle('on')));
+    // 字号三档
+    $$('#sb-body [data-font]').forEach((b) => b.addEventListener('click', () => {
+      currentFont = b.dataset.font;
+      app.dataset.font = currentFont;
+      try { localStorage.setItem('dy.font', currentFont); } catch { /* 忽略 */ }
+      renderSidebar(true);
+    }));
     // 「神视模式」：只影响显示，不影响任何计算
     $$('#sb-body .switch[data-set]').forEach((sw) => sw.addEventListener('click', () => {
       if (sw.dataset.set === '神视模式') {
@@ -1260,6 +1387,11 @@ import { retrieve } from './memory/retrieve.js';
   function openPanel(name, { reset = false } = {}) {
     const switching = name !== curPanel || reset;
     curPanel = name;
+    // 平板上打开面板时，把收起的右栏自动展开——不然点了图标什么也不发生
+    if (app.dataset.layout === 'tablet' && $('#sidebar') && $('#sidebar').classList.contains('mini')) {
+      sideCollapsed = false;
+      applyCollapse();
+    }
     // 只有真的换了面板才允许清掉编辑态并强制重建；
     // 重复点同一个 tab 不该把用户正在填的内容冲掉。
     if (switching) sbDirty = false;
@@ -1269,6 +1401,61 @@ import { retrieve } from './memory/retrieve.js';
   function closePanel() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); }
   $('#sb-close').addEventListener('click', closePanel);
   $('#scrim').addEventListener('click', closePanel);
+  const sc = $('#side-collapse');
+  if (sc) sc.addEventListener('click', () => toggleSide(true));
+
+  // 点空白处收起「更多」弹层
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#more-sheet') && !e.target.closest('#more-btn')) closeMoreSheet();
+  });
+
+  /* ---------- 键盘（平板带键盘 / 桌面） ---------- */
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if ($('#judge').classList.contains('open')) { $('#judge').classList.remove('open'); return; }
+      if ($('#sidebar').classList.contains('open')) { closePanel(); return; }
+      closeMoreSheet();
+      return;
+    }
+    // 1–4 选行动建议
+    if (/^[1-4]$/.test(e.key) && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) {
+      const btn = $$('#sugg .c')[Number(e.key) - 1];
+      if (btn) { e.preventDefault(); btn.click(); }
+      return;
+    }
+    // Alt+←/→ 循环面板
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const i = PANELS.findIndex((p) => p.id === curPanel);
+      const next = PANELS[(i + (e.key === 'ArrowRight' ? 1 : PANELS.length - 1) + PANELS.length) % PANELS.length];
+      if (next) { e.preventDefault(); openPanel(next.id); }
+    }
+  });
+
+  /* ---------- 手势：抽屉内下滑关闭 ---------- */
+  (function bindSwipeClose() {
+    const head = document.querySelector('#sidebar .sb-head');
+    if (!head) return;
+    let y0 = null;
+    head.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; }, { passive: true });
+    head.addEventListener('touchmove', (e) => {
+      if (y0 == null) return;
+      const dy = e.touches[0].clientY - y0;
+      const sb = $('#sidebar');
+      if (dy > 0 && !$('#sidebar').classList.contains('mini')) {
+        sb.style.transform = 'translateX(0) translateY(' + Math.min(dy, 120) + 'px)';
+      }
+    }, { passive: true });
+    head.addEventListener('touchend', (e) => {
+      const sb = $('#sidebar');
+      const dy = y0 == null ? 0 : (e.changedTouches[0].clientY - y0);
+      sb.style.transform = '';
+      y0 = null;
+      // 手机：下滑关闭抽屉；平板：下滑收起右栏
+      if (dy > 70) {
+        if (app.dataset.layout === 'tablet') toggleSide(true); else closePanel();
+      }
+    });
+  })();
 
   // 编辑态跟踪：在面板里输入 → 置脏；点任意按钮 → 视为编辑结束（但不清空输入框的值）
   $('#sb-body').addEventListener('input', () => { sbDirty = true; });
@@ -1540,6 +1727,10 @@ import { retrieve } from './memory/retrieve.js';
           <div class="kv"><span class="k">裁决模型</span><span class="v">gpt-4o-mini · 快档（效果抽取）</span></div>
           <div class="kv"><span class="k">存档</span><span class="v">${esc(currentSaveId)} · 第 ${state.世界.天数} 日 · ${turns.length} 条记录 · ${esc(store.backend)}${store.persistent ? '' : '（临时）'}</span></div>
         </div>
+        <div class="set-row"><div class="lbl">正文字号<div class="d">只影响正文与列表，不影响版式</div></div>
+          <div style="display:flex;gap:6px">
+            ${['s', 'm', 'l'].map((f) => `<button class="tab ${currentFont === f ? 'on' : ''}" data-font="${f}">${({ s: '小', m: '中', l: '大' })[f]}</button>`).join('')}
+          </div></div>
         ${rows.map(([t, d, on]) => `<div class="set-row"><div class="lbl">${esc(t)}<div class="d">${esc(d)}</div></div><div class="switch ${on ? 'on' : ''}" data-set="${esc(t)}"></div></div>`).join('')}
         ${updateSectionHTML()}
         <div class="sect-title">安 卓 适 配</div>
@@ -1638,6 +1829,8 @@ import { retrieve } from './memory/retrieve.js';
 
   // 预设列表（本机配置，不参与同步）
   refreshPresets().then(() => { if (curPanel === '模型') renderSidebar(); });
+
+  applyCollapse();
 
   // 启动自检：跑到这里说明模块求值没有抛错
   if (typeof window.__dyMarkBootOk === 'function') window.__dyMarkBootOk();

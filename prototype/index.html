@@ -52,15 +52,19 @@
       <nav class="rail" id="rail"></nav>
 
       <div class="stage">
-        <header class="hud" id="hud"></header>
-        <div class="stream" id="stream"></div>
-        <footer class="actions" id="actions"></footer>
+        <!-- mid-inner：平板下把中栏内容限宽居中（中文长文 30–38 字/行最舒服），手机下无影响 -->
+        <div class="mid-inner">
+          <header class="hud" id="hud"></header>
+          <div class="stream" id="stream"></div>
+          <footer class="actions" id="actions"></footer>
+        </div>
       </div>
 
       <!-- 右侧状态面板（平板常驻 / 手机抽屉） -->
       <aside class="sidebar" id="sidebar">
         <div class="sb-head">
           <span class="t" id="sb-title">主角</span>
+          <button class="side-collapse" id="side-collapse" title="收起右栏">›</button>
           <button class="close" id="sb-close">×</button>
         </div>
         <div class="sb-tabs" id="sb-tabs"></div>

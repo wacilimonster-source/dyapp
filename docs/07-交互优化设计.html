@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>《道渊》交互优化设计 · 手机 / 平板</title>
+<style>
+  :root {
+    --bg:#0b0f18; --panel:#141c2c; --card:#151d31; --line:#2a3a5e; --line-soft:rgba(42,58,94,.5);
+    --gold:#d4af37; --gold-soft:rgba(212,175,55,.14); --purple:#c58aff;
+    --txt:#e8e6df; --dim:#8b94a8; --faint:#5b6478;
+    --ok:#6fd49a; --warn:#ffb066; --bad:#ff7a6b;
+    --radius:12px; --radius-sm:8px;
+    --res-life:#e05555; --res-blood:#b0453a; --res-mana:#5aa9ff; --res-cult:#d4af37; --res-soul:#c58aff; --res-dao:#6fd49a;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background:var(--bg); color:var(--txt); line-height:1.7;
+    font-family:"Noto Serif SC","Songti SC","Microsoft YaHei",serif; -webkit-font-smoothing:antialiased;
+  }
+  .page { max-width:1180px; margin:0 auto; padding:36px 22px 90px; }
+  h1 { font-size:1.9rem; letter-spacing:.14em; color:var(--gold); font-weight:600; }
+  h2 { font-size:1.25rem; color:var(--gold); letter-spacing:.1em; margin:52px 0 14px; padding-bottom:9px; border-bottom:1px solid var(--line); }
+  h3 { font-size:1.02rem; color:var(--purple); margin:26px 0 10px; letter-spacing:.06em; }
+  p { color:var(--dim); margin:9px 0; }
+  .lead { color:var(--txt); font-size:1.02rem; }
+  code { background:rgba(0,0,0,.35); border:1px solid var(--line); border-radius:5px; padding:1px 6px; font-size:.85em; color:var(--purple); font-family:ui-monospace,Consolas,monospace; }
+  .sub { color:var(--faint); font-size:.82rem; letter-spacing:.04em; margin-top:8px; }
+  .badge { display:inline-block; font-size:.72rem; padding:2px 9px; border-radius:99px; border:1px solid var(--line); color:var(--dim); margin-left:8px; vertical-align:middle; }
+  .badge.p0 { color:var(--bad); border-color:rgba(255,122,107,.5); }
+  .badge.p1 { color:var(--warn); border-color:rgba(255,176,102,.5); }
+  .badge.ok { color:var(--ok); border-color:rgba(111,212,154,.5); }
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:.86rem; }
+  th,td { border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top; }
+  th { background:rgba(212,175,55,.07); color:var(--gold); font-weight:600; white-space:nowrap; }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .worse { color:var(--bad); }
+  .better { color:var(--ok); }
+  .note { background:rgba(212,175,55,.06); border-left:2px solid var(--gold); padding:11px 14px; border-radius:0 8px 8px 0; margin:14px 0; color:var(--dim); font-size:.88rem; }
+  .note b { color:var(--txt); }
+
+  /* ---- 演示台 ---- */
+  .stage { border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:16px; margin:16px 0 6px; }
+  .stage-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .stage-head .t { color:var(--gold); font-size:.9rem; letter-spacing:.08em; }
+  .stage-head .hint { color:var(--faint); font-size:.76rem; }
+  .phone-frame {
+    width:390px; max-width:100%; height:700px; margin:0 auto; position:relative;
+    border:1px solid var(--line); border-radius:26px; overflow:hidden; background:var(--bg);
+    box-shadow:0 18px 60px rgba(0,0,0,.6);
+  }
+  .tab-frame {
+    height:640px; position:relative; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--bg);
+  }
+
+  /* ---- 演示用的 app 组件样式（与真实实现同源） ---- */
+  .app-col { display:flex; flex-direction:column; height:100%; }
+  .hud { background:linear-gradient(180deg,rgba(212,175,55,.06),transparent),#1a2338; border-bottom:1px solid var(--line); }
+  .hud-row { display:flex; align-items:center; gap:8px; padding:7px 12px; }
+  .hud .nm { color:var(--gold); font-weight:700; }
+  .hud .realm { color:var(--purple); font-size:.8rem; }
+  .hud .sp { flex:1; }
+  .hud .mini { color:var(--dim); font-size:.72rem; }
+  .iconbtn { min-width:36px; min-height:36px; display:grid; place-items:center; color:var(--dim); border:1px solid var(--line); border-radius:8px; background:none; font-size:1rem; cursor:pointer; }
+  /* 聚合条：默认只有 8px 高 */
+  .agg { display:flex; height:8px; gap:1px; padding:0 12px 8px; cursor:pointer; }
+  .agg span { height:8px; border-radius:2px; }
+  .hud-bars { display:grid; grid-template-columns:repeat(3,1fr); gap:5px 12px; padding:0 12px 10px; }
+  .bar .t { display:flex; justify-content:space-between; font-size:.68rem; color:var(--dim); }
+  .track { height:6px; background:#0b101c; border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-top:2px; }
+  .fill { height:100%; border-radius:3px; }
+  .collapsed { display:none; }
+  .stream { flex:1; overflow-y:auto; padding:12px; }
+  .banner { border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin-bottom:12px;
+    background:linear-gradient(90deg,rgba(197,138,255,.08),transparent); font-size:.72rem; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; }
+  .bubble { padding:11px 13px; border-radius:var(--radius); border:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(212,175,55,.05),transparent 40%),var(--card); font-size:.9rem; margin-bottom:10px; }
+  .bubble.me { background:rgba(197,138,255,.1); border-color:rgba(197,138,255,.35); max-width:78%; margin-left:auto; }
+  /* 新行动区 */
+  .actions { border-top:1px solid var(--line); background:#1a2338; padding:8px 10px; }
+  .sugg { display:flex; gap:7px; overflow-x:auto; padding-bottom:8px; scrollbar-width:none; }
+  .sugg::-webkit-scrollbar{ display:none; }
+  .sugg .c { flex:0 0 auto; font-size:.78rem; padding:7px 12px; border-radius:99px; border:1px dashed rgba(212,175,55,.45);
+    color:var(--gold); background:rgba(212,175,55,.05); white-space:nowrap; cursor:pointer; }
+  .row-main { display:grid; grid-template-columns:repeat(4,1fr) 52px; gap:7px; }
+  .act { min-height:50px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    border:1px solid var(--line); border-radius:10px; background:rgba(0,0,0,.22); color:var(--dim); font-size:.68rem; cursor:pointer; }
+  .act .i { font-size:1.05rem; }
+  .act.gold { color:var(--gold); border-color:rgba(212,175,55,.45); }
+  .act.more { font-size:.8rem; }
+  .input-row { display:flex; gap:8px; margin-top:8px; }
+  .input-row .f { flex:1; min-height:42px; padding:10px 14px; background:var(--bg); border:1px solid var(--line);
+    border-radius:99px; color:var(--faint); font-size:.85rem; }
+  .input-row .send { min-width:54px; border-radius:99px; border:1px solid rgba(212,175,55,.5); background:var(--gold-soft); color:var(--gold); cursor:pointer; }
+  .more-sheet { position:absolute; left:0; right:0; bottom:0; background:#1a2338; border-top:1px solid var(--line);
+    border-radius:14px 14px 0 0; padding:12px; transform:translateY(101%); transition:transform .25s cubic-bezier(.2,.8,.2,1); }
+  .more-sheet.open { transform:translateY(0); }
+  .more-sheet .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  /* 抽屉分组 */
+  .drawer { position:absolute; inset:0; background:var(--bg); display:flex; flex-direction:column;
+    transform:translateX(101%); transition:transform .25s cubic-bezier(.2,.8,.2,1); }
+  .drawer.open { transform:translateX(0); }
+  .dr-head { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line); }
+  .dr-head .t { flex:1; color:var(--gold); letter-spacing:.2em; }
+  .grp { display:flex; gap:6px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .grp .g-label { color:var(--faint); font-size:.7rem; letter-spacing:.1em; margin-right:2px; }
+  .chip { font-size:.78rem; padding:6px 12px; border-radius:99px; border:1px solid var(--line); color:var(--dim); background:none; cursor:pointer; white-space:nowrap; }
+  .chip.on { color:var(--gold); border-color:rgba(212,175,55,.5); background:var(--gold-soft); }
+  .chip.more { color:var(--purple); border-color:rgba(197,138,255,.4); }
+  .dr-body { flex:1; overflow-y:auto; padding:14px; color:var(--dim); font-size:.85rem; }
+  /* 平板三栏 */
+  .tri { display:flex; height:100%; }
+  .rail { width:86px; flex:0 0 86px; background:#080c16; border-right:1px solid var(--line);
+    display:flex; flex-direction:column; gap:3px; padding:8px 6px; overflow-y:auto; transition:width .22s; }
+  .rail.mini { width:0; flex-basis:0; overflow:hidden; padding:0; }
+  .rail .rb { flex:0 0 auto; min-height:50px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:2px; border-radius:9px; color:var(--dim); font-size:.62rem; border:1px solid transparent; background:none; cursor:pointer; }
+  .rail .rb .i { font-size:1.15rem; }
+  .rail .rb.on { color:var(--gold); border-color:rgba(212,175,55,.4); background:var(--gold-soft); }
+  .rail .rb.sec { color:var(--faint); font-size:.58rem; min-height:22px; }
+  .mid { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .mid-inner { max-width:720px; width:100%; margin:0 auto; display:flex; flex-direction:column; flex:1; min-height:0; }
+  .side { width:360px; flex:0 0 360px; border-left:1px solid var(--line); display:flex; flex-direction:column; transition:width .22s; }
+  .side.mini { width:0; flex-basis:0; overflow:hidden; border-left:none; }
+  .side .tabs { display:flex; gap:6px; padding:8px 10px; border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none; }
+  .side .tabs::-webkit-scrollbar{ display:none; }
+  .side .body { flex:1; overflow-y:auto; padding:12px; color:var(--dim); font-size:.84rem; }
+  .toggle { font-size:.72rem; padding:5px 10px; border-radius:99px; border:1px solid var(--line); color:var(--dim); background:none; cursor:pointer; }
+  .ruler { font-size:.72rem; color:var(--faint); text-align:center; margin-top:8px; }
+  .kv { display:flex; gap:10px; padding:4px 0; border-bottom:1px dotted var(--line-soft); font-size:.82rem; }
+  .kv .k { color:var(--purple); flex:0 0 4.6em; }
+  .kv .v { color:var(--dim); }
+  .check { list-style:none; }
+  .check li { padding:7px 0 7px 26px; position:relative; color:var(--dim); font-size:.88rem; border-bottom:1px solid var(--line-soft); }
+  .check li::before { content:'☐'; position:absolute; left:4px; color:var(--faint); }
+  .check li.done::before { content:'☑'; color:var(--ok); }
+  .check li b { color:var(--txt); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>《道渊》交互优化设计</h1>
+  <div class="sub">手机 / 平板 · v0.1（评审稿）· 基于对现有实现的实测数字，不是凭感觉</div>
+
+  <p class="lead">
+    先说结论：现版本的版式骨架是对的（手机单栏、平板三栏），但**界面自己吃掉了太多屏幕**，
+    而且有几处交互在真机上会露馅。下面每条问题都带实测数字，改法都配了可以点的演示。
+  </p>
+
+  <h2>一、实测审计</h2>
+
+  <h3>1.1 手机 390×844：界面占 39%</h3>
+  <table>
+    <tr><th>区块</th><th>现状高度</th><th>占屏比</th><th>问题</th></tr>
+    <tr><td>状态栏 HUD</td><td class="num worse">145px</td><td class="num worse">17%</td><td>三行：姓名境界 / 世界状态 / 六维条。六维在"模糊感知"模式下只有文字，条本身信息量低却占 3 行</td></tr>
+    <tr><td>行动区</td><td class="num worse">189px</td><td class="num worse">22%</td><td>轮盘 8 个按钮挤成 3 行（117px）+ 输入框。而"玉简/地图/背包"与"面板"语义重复，都是开抽屉</td></tr>
+    <tr><td>叙事流</td><td class="num">509px</td><td class="num">60%</td><td>真正要看的内容只剩 6 成</td></tr>
+  </table>
+  <div class="note">
+    <b>合计 39%。</b>这是个文字叙事游戏，"看字"是主玩法——状态与操作占了近四成屏，主玩法被挤成次要的。
+  </div>
+
+  <h3>1.2 手机：行动建议会滚出视野</h3>
+  <p>
+    行动建议现在是**叙事流里的胶囊**（跟在每条回复后面）。一回合长文之后，建议已经被顶到上一屏——
+    玩家要么往回滚，要么自己敲字。而"下一步做什么"恰恰是每回合最需要一眼看到的东西。
+  </p>
+
+  <h3>1.3 手机：抽屉 14 个 tab 要横滑找</h3>
+  <p>
+    面板 tab 条是单行横滑，共 <code>14</code> 项。模型 / 同步 / 存档 / 设置 排在最后，
+    新玩家基本发现不了，得横滑才知道存在。
+  </p>
+
+  <h3>1.4 平板：右栏 tab 条吃掉 4 行</h3>
+  <table>
+    <tr><th>视口</th><th>版式</th><th>中栏</th><th>一行字数</th><th>右栏 tab 条</th><th>左栏</th></tr>
+    <tr><td>1180×820</td><td>平板</td><td class="num">650px</td><td class="num">41 字</td><td class="num worse">173px（4 行）</td><td class="worse">15 项，需滚动</td></tr>
+    <tr><td>1024×768</td><td>平板</td><td class="num">566px</td><td class="num">35 字</td><td class="num worse">173px（4 行）</td><td class="worse">15 项，需滚动</td></tr>
+    <tr><td>800×1280 竖屏</td><td>平板</td><td class="num worse">394px</td><td class="num worse">25 字</td><td class="num worse">173px（4 行）</td><td>15 项</td></tr>
+  </table>
+  <p>
+    两个明显问题：右栏 tab 因为用了换行铺开，<b>竖向吃掉 173px</b>（占右栏 23%）；
+    平板竖屏时左右栏固定占掉 406px，<b>中栏只剩 394px</b>——比手机还窄，读起来很难受。
+  </p>
+
+  <h3>1.5 ~~平板：正文行宽不受限~~ <span class="badge ok">复核后撤回</span></h3>
+  <p>
+    这一条我最初是按<b>栏宽</b>算的（1180 宽 → 41 字/行）。写进审计后又去量了<b>实际气泡</b>：
+    助手气泡有 <code>max-width:78%</code> 约束，实测宽度 462px ≈ <b>29 字/行</b>（手机 328px ≈ 21 字/行），
+    本来就在舒适区间。<b>所以"叙事流限宽"作废</b>——不为改而改。
+  </p>
+
+  <h3>1.6 版式重算过于单薄 <span class="badge p1">原报 bug，复核后降级</span></h3>
+  <div class="note">
+    <b>先说我复核到了什么：</b>我最初看到"视口宽度变了、版式却仍停在 phone"，判定是产品 bug。
+    后来在页面里装了探针复测——改动视口的瞬间，<code>window.resize</code>、<code>ResizeObserver</code>、
+    <code>visualViewport.resize</code> <b>三者一个都没触发（计数全为 0）</b>。
+    也就是说那是<b>自动化测试环境的假象</b>，我在设备上并没有真的复现过。
+    <br><br>
+    改动保留，但理由换成真实的那条：安卓上<b>软键盘弹出/收起</b>与<b>分屏</b>主要靠
+    <code>visualViewport.resize</code> 通知，而版式判定与"输入框别被键盘盖住"都依赖这个信号，
+    只听 <code>window.resize</code> 会漏。旋转屏幕另有 <code>orientationchange</code> 兜底（实测有效）。
+  </div>
+
+  <h2>二、优化后的交互（可以直接点）</h2>
+
+  <h3>2.1 手机状态栏：两级折叠 <span class="badge p0">省 79px</span></h3>
+  <p>常显只留一行（姓名 · 境界 · 时间 · 地点 · 危机 · ☰）；六维默认收成一条 8px 的**聚合条**（按比例着色，一眼看出哪项在掉），点一下展开细节。点聚合条试试：</p>
+  <div class="stage">
+    <div class="stage-head"><span class="t">演示 · 手机 390×844</span><span class="hint">点那条细长彩条展开六维</span></div>
+    <div class="phone-frame">
+      <div class="app-col">
+        <div class="hud" id="hudDemo">
+          <div class="hud-row">
+            <span class="nm">陆沉</span><span class="realm">炼气三层（DC:3）</span>
+            <span class="sp"></span>
+            <button class="iconbtn">☰</button>
+          </div>
+          <div class="hud-row" style="padding-top:0;padding-bottom:8px">
+            <span class="mini">🕛 初春 · 黄昏</span><span class="mini">📍 青石镇 · 醉仙楼</span>
+            <span class="mini">☁ 细雨</span><span class="mini" style="color:var(--ok)">危机 · 低</span>
+          </div>
+          <div class="agg" id="aggBar" title="点击展开六维">
+            <span style="flex:92;background:var(--res-life)"></span>
+            <span style="flex:78;background:var(--res-blood)"></span>
+            <span style="flex:61;background:var(--res-mana)"></span>
+            <span style="flex:42;background:var(--res-cult)"></span>
+            <span style="flex:71;background:var(--res-soul)"></span>
+            <span style="flex:55;background:var(--res-dao)"></span>
+          </div>
+          <div class="hud-bars collapsed" id="barsDetail">
+            <div class="bar"><div class="t"><span>生命</span><b>充盈</b></div><div class="track"><div class="fill" style="width:92%;background:var(--res-life)"></div></div></div>
+            <div class="bar"><div class="t"><span>精血</span><b>充盈</b></div><div class="track"><div class="fill" style="width:78%;background:var(--res-blood)"></div></div></div>
+            <div class="bar"><div class="t"><span>灵力</span><b>稳固</b></div><div class="track"><div class="fill" style="width:61%;background:var(--res-mana)"></div></div></div>
+            <div class="bar"><div class="t"><span>修为</span><b>归零</b></div><div class="track"><div class="fill" style="width:42%;background:var(--res-cult)"></div></div></div>
+            <div class="bar"><div class="t"><span>神识</span><b>稳固</b></div><div class="track"><div class="fill" style="width:71%;background:var(--res-soul)"></div></div></div>
+            <div class="bar"><div class="t"><span>道心 初窥门径</span><b>稳固</b></div><div class="track"><div class="fill" style="width:55%;background:var(--res-dao)"></div></div></div>
+          </div>
+        </div>
+        <div class="stream">
+          <div class="banner"><span>当前时间 · 初春 · 黄昏</span><span>当前地点 · 青石镇</span><span>危机 · 低</span></div>
+          <div class="bubble">雨丝斜斜地织着。你推开醉仙楼的木门，暖气和酒香一同涌出来。</div>
+        </div>
+      </div>
+    </div>
+    <div class="ruler" id="hudRuler">HUD 实测：折叠 66px ／ 展开 145px（原来恒为 145px）</div>
+  </div>
+
+  <h3>2.2 手机行动区：4 主行动 + 「更多」+ 建议吸附 <span class="badge p0">省 73px</span></h3>
+  <p>
+    轮盘从 8 个收成 4 个主行动（探索/修炼/突破/交流，这是每回合真会点的），
+    其余收进「更多」；<b>行动建议吸附在输入框上方</b>，横滑可见，点一下即发——不用再往回滚。
+  </p>
+  <div class="stage">
+    <div class="stage-head"><span class="t">演示 · 手机</span><span class="hint">点「更多 ⋯」弹出被收起的入口</span></div>
+    <div class="phone-frame">
+      <div class="app-col" style="position:relative">
+        <div class="stream" style="flex:1">
+          <div class="bubble">宫银叶把温酒推过来，杯沿还沾着一线水汽：「后山的事，镇里压着不让传。」</div>
+          <div class="bubble me">我问她有什么线索。</div>
+        </div>
+        <div class="actions">
+          <div class="sugg">
+            <button class="c">追问细节</button>
+            <button class="c">给她些灵石</button>
+            <button class="c">往后山去</button>
+            <button class="c">先回客栈歇息</button>
+          </div>
+          <div class="row-main">
+            <button class="act gold"><span class="i">🧭</span>探索</button>
+            <button class="act gold"><span class="i">🧘</span>修炼</button>
+            <button class="act gold"><span class="i">⚡</span>突破</button>
+            <button class="act"><span class="i">💬</span>交流</button>
+            <button class="act more" id="moreBtn">⋯<span style="font-size:.6rem">更多</span></button>
+          </div>
+          <div class="input-row">
+            <div class="f">写下你的行动……</div><button class="send">发送</button>
+          </div>
+        </div>
+        <div class="more-sheet" id="moreSheet">
+          <div class="grid">
+            <button class="act"><span class="i">📱</span>玉简</button>
+            <button class="act"><span class="i">🗺</span>地图</button>
+            <button class="act"><span class="i">🎒</span>背包</button>
+            <button class="act"><span class="i">👤</span>人物</button>
+            <button class="act"><span class="i">📜</span>机遇</button>
+            <button class="act"><span class="i">🏮</span>绝色榜</button>
+            <button class="act"><span class="i">📖</span>图鉴</button>
+            <button class="act"><span class="i">☰</span>全部面板</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ruler">行动区实测：折叠 116px（原来恒为 189px）；建议常驻可见，不再需要回滚</div>
+  </div>
+
+  <h3>2.3 手机抽屉：分组 + 手势 + 返回键</h3>
+  <p>
+    tab 分「常用」与「更多」两组，常用的 5 个直接可见，其余一点展开；打开抽屉可以用
+    <b>返回键</b>或<b>下滑</b>关掉；再次打开回到上次停留的面板。
+  </p>
+  <div class="stage">
+    <div class="stage-head"><span class="t">演示 · 手机</span><span class="hint">点「打开抽屉」，再点「更多」展开第二组</span></div>
+    <div class="phone-frame">
+      <div class="app-col">
+        <div class="hud">
+          <div class="hud-row"><span class="nm">陆沉</span><span class="realm">炼气三层（DC:3）</span><span class="sp"></span>
+            <button class="iconbtn" id="openDrawer">☰</button></div>
+        </div>
+        <div class="stream"><div class="bubble">（主界面叙事流）</div></div>
+        <div class="drawer" id="drawerDemo">
+          <div class="dr-head"><span class="t">主角</span><button class="iconbtn" id="closeDrawer">✕</button></div>
+          <div class="grp">
+            <span class="g-label">常用</span>
+            <button class="chip on">☯ 主角</button><button class="chip">💞 道侣</button>
+            <button class="chip">👤 人物</button><button class="chip">📜 机遇</button>
+            <button class="chip">🎒 背包</button>
+            <button class="chip more" id="moreTabs">＋ 更多 ▾</button>
+          </div>
+          <div class="grp collapsed" id="moreGrp">
+            <span class="g-label">更多</span>
+            <button class="chip">🐾 灵宠</button><button class="chip">🏮 绝色榜</button>
+            <button class="chip">📱 玉简</button><button class="chip">🗺 地图</button>
+            <button class="chip">📖 图鉴</button><button class="chip">💾 存档</button>
+            <button class="chip">🔌 模型</button><button class="chip">☁ 同步</button>
+            <button class="chip">⚙ 设置</button>
+          </div>
+          <div class="dr-body">
+            <div style="color:var(--gold);margin-bottom:8px">陆沉 <span style="color:var(--purple)">炼气三层</span></div>
+            <div class="kv"><span class="k">宗门</span><span class="v">青云宗 · 外门</span></div>
+            <div class="kv"><span class="k">灵根</span><span class="v">黄品 · 单灵根（火）</span></div>
+            <div class="kv"><span class="k">状态</span><span class="v">无异常</span></div>
+            <p style="margin-top:12px;color:var(--faint);font-size:.78rem">支持：返回键关闭 · 下滑关闭 · 记住上次面板</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>2.4 平板：右栏 tab 收成一行 + 两侧可折叠 <span class="badge p0">右栏多出 129px</span></h3>
+  <p>
+    tab 改单行横滑（不再换行铺开，173px → 44px）；左栏分「行动 / 人物 / 物品 / 系统」四段；
+    两栏都能一键收起进入沉浸阅读。点下面的按钮试试：
+  </p>
+  <div class="stage">
+    <div class="stage-head">
+      <span class="t">演示 · 平板 1180×640</span>
+      <button class="toggle" id="tglRail">收起左栏</button>
+      <button class="toggle" id="tglSide">收起右栏</button>
+      <button class="toggle" id="tglNarrow">切换 800 竖直</button>
+    </div>
+    <div class="tab-frame">
+      <div class="tri" id="triDemo">
+        <div class="rail" id="railDemo">
+          <button class="rb on"><span class="i">☯</span>主角</button>
+          <button class="rb"><span class="i">🧭</span>探索</button>
+          <button class="rb sec">人物</button>
+          <button class="rb"><span class="i">💞</span>道侣</button>
+          <button class="rb"><span class="i">👤</span>人物</button>
+          <button class="rb"><span class="i">🐾</span>灵宠</button>
+          <button class="rb sec">物品</button>
+          <button class="rb"><span class="i">🎒</span>背包</button>
+          <button class="rb"><span class="i">🗺</span>地图</button>
+          <button class="rb"><span class="i">📖</span>图鉴</button>
+          <button class="rb sec">系统</button>
+          <button class="rb"><span class="i">💾</span>存档</button>
+          <button class="rb"><span class="i">🔌</span>模型</button>
+          <button class="rb"><span class="i">⚙</span>设置</button>
+        </div>
+        <div class="mid">
+          <div class="mid-inner">
+            <div class="stream" style="padding:16px">
+              <div class="banner"><span>初春 · 黄昏</span><span>青石镇 · 醉仙楼</span><span>危机 · 低</span></div>
+              <div class="bubble">雨丝斜斜地织着。你推开醉仙楼的木门，暖气和酒香一同涌出来，将湿冷隔在身后。<br><br>堂中三三两两的修士就着灵酒低声说话，火盆里的炭烧得正红。</div>
+              <div class="bubble me">要一壶灵酒，坐下听听闲话。</div>
+              <div class="bubble">「灵酒？你这身家底，喝得起么。」宫银叶嘴上不饶人，手上却已温了一壶推过来。</div>
+            </div>
+            <div class="actions">
+              <div class="sugg"><button class="c">追问细节</button><button class="c">结账离开</button><button class="c">问她肯不肯同去</button></div>
+              <div class="row-main">
+                <button class="act gold"><span class="i">🧭</span>探索</button>
+                <button class="act gold"><span class="i">🧘</span>修炼</button>
+                <button class="act gold"><span class="i">⚡</span>突破</button>
+                <button class="act"><span class="i">💬</span>交流</button>
+                <button class="act more">⋯<span style="font-size:.6rem">更多</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="side" id="sideDemo">
+          <div class="tabs">
+            <button class="chip on">☯ 主角</button><button class="chip">💞 道侣</button>
+            <button class="chip">👤 人物</button><button class="chip">🐾 灵宠</button>
+            <button class="chip">📜 机遇</button><button class="chip">🏮 绝色榜</button>
+            <button class="chip">📱 玉简</button><button class="chip">🎒 背包</button>
+            <button class="chip">🗺 地图</button><button class="chip">📖 图鉴</button>
+            <button class="chip">💾 存档</button><button class="chip">🔌 模型</button>
+            <button class="chip">☁ 同步</button><button class="chip">⚙ 设置</button>
+          </div>
+          <div class="body">
+            <div class="kv"><span class="k">生命</span><span class="v">充盈</span></div>
+            <div class="kv"><span class="k">灵力</span><span class="v">稳固</span></div>
+            <div class="kv"><span class="k">道心</span><span class="v">初窥门径</span></div>
+            <p style="margin-top:10px;font-size:.76rem;color:var(--faint)">tab 单行横滑：44px（原来换行铺开 173px）</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="ruler" id="triRuler">中栏限宽 720px 居中 · 一行约 34 字（原 41 字）</div>
+  </div>
+
+  <h3>2.5 平板竖屏：默认收起右栏</h3>
+  <p>
+    竖屏时左右栏固定占 406px，中栏只剩 394px（25 字/行），比手机还窄。
+    优化后：<b>平板竖屏默认收起右栏</b>（点 tab 图标再展开），中栏拿到 714px。
+  </p>
+
+  <h3>2.6 实施后的实测对照</h3>
+  <table>
+    <tr><th>指标</th><th>改前</th><th>改后（实测）</th></tr>
+    <tr><td>手机 390×844 · HUD 高</td><td class="num">145px</td><td class="num better">91px</td></tr>
+    <tr><td>手机 · 行动区高</td><td class="num">189px</td><td class="num better">121–163px</td></tr>
+    <tr><td>手机 · 叙事流高</td><td class="num">509px</td><td class="num better">590–632px</td></tr>
+    <tr><td>手机 · 界面占屏比</td><td class="num worse">39%</td><td class="num better">约 30%</td></tr>
+    <tr><td>平板 1180×820 · 右栏 tab 条高</td><td class="num worse">173px（4 行）</td><td class="num better">51px（1 行）</td></tr>
+    <tr><td>平板 800×1280 竖屏 · 中栏宽</td><td class="num worse">394px</td><td class="num better">714px</td></tr>
+    <tr><td>平板 · 助手气泡一行字数</td><td class="num">29 字（本就合适）</td><td class="num">29 字</td></tr>
+  </table>
+
+  <h3>2.7 版式与键盘的健壮性</h3>
+  <p>
+    版式重算从"只听 <code>window.resize</code>"改为三重监听：
+    <code>ResizeObserver</code>（盯住 app 容器）＋ <code>visualViewport.resize</code>（安卓软键盘与旋转都会触发）＋
+    <code>visibilitychange</code>（从后台切回来补一次）。软键盘弹出时用 <code>visualViewport.height</code>
+    把输入区顶到可视范围内，让输入框始终可见。
+  </p>
+
+  <h2>三、实施清单</h2>
+  <table>
+    <tr><th>#</th><th>改动</th><th>端</th><th>收益</th><th>优先级</th></tr>
+    <tr><td>1</td><td>HUD 两级折叠（聚合条 + 点击展开）</td><td>手机</td><td class="better">省 79px</td><td>P0</td></tr>
+    <tr><td>2</td><td>行动区：4 主行动 + 「更多」弹层</td><td>手机</td><td class="better">省 73px</td><td>P0</td></tr>
+    <tr><td>3</td><td>行动建议吸附到输入框上方（横滑）</td><td>手机</td><td class="better">不再需要回滚</td><td>P0</td></tr>
+    <tr><td>4</td><td>抽屉 tab 分组（常用 / 更多）</td><td>手机</td><td class="better">可发现性</td><td>P0</td></tr>
+    <tr><td>5</td><td>版式重算三重监听（ResizeObserver / visualViewport / visibilitychange）</td><td>两端</td><td class="better">软键盘与分屏不漏</td><td>P0</td></tr>
+    <tr><td>6</td><td>右栏 tab 单行横滑</td><td>平板</td><td class="better">右栏多 129px</td><td>P0</td></tr>
+    <tr><td>7</td><td><s>叙事流最大宽度 720px 居中</s></td><td>平板</td><td>作废：气泡实测仅 29 字/行，本就在舒适区间</td><td>—</td></tr>
+    <tr><td>8</td><td>两侧栏可折叠 + 平板竖屏默认收右栏</td><td>平板</td><td class="better">竖屏中栏 394→714px</td><td>P1</td></tr>
+    <tr><td>9</td><td>左栏分四段（行动/人物/物品/系统）</td><td>平板</td><td class="better">15 项不再需滚动</td><td>P1</td></tr>
+    <tr><td>10</td><td>返回键 / 下滑关闭抽屉；Esc 关闭覆盖层</td><td>两端</td><td class="better">符合直觉</td><td>P1</td></tr>
+    <tr><td>11</td><td>数字键 1–4 选行动建议；Tab 切面板</td><td>平板/桌面</td><td class="better">效率</td><td>P2</td></tr>
+    <tr><td>12</td><td>字号三档 + <code>prefers-reduced-motion</code></td><td>两端</td><td class="better">可访问性</td><td>P2</td></tr>
+  </table>
+
+  <div class="note">
+    <b>不做的事</b>：不改版式骨架（手机单栏 / 平板三栏是对的）、不加底部常驻 Tab 栏（会再吃掉 56px）、
+    不改叙事流的气泡样式（已可用）。这次只解决"界面吃屏幕"与"该看到的东西看不到"。
+  </div>
+
+</div>
+
+<script>
+  // 演示交互：HUD 折叠
+  document.getElementById('aggBar').addEventListener('click', () => {
+    document.getElementById('barsDetail').classList.toggle('collapsed');
+  });
+  // 演示交互：更多弹层
+  const moreSheet = document.getElementById('moreSheet');
+  document.getElementById('moreBtn').addEventListener('click', () => moreSheet.classList.toggle('open'));
+  // 演示交互：抽屉
+  const drawer = document.getElementById('drawerDemo');
+  document.getElementById('openDrawer').addEventListener('click', () => drawer.classList.add('open'));
+  document.getElementById('closeDrawer').addEventListener('click', () => drawer.classList.remove('open'));
+  document.getElementById('moreTabs').addEventListener('click', () => {
+    document.getElementById('moreGrp').classList.toggle('collapsed');
+  });
+  // 演示交互：平板三栏折叠
+  const railDemo = document.getElementById('railDemo'), sideDemo = document.getElementById('sideDemo');
+  const triRuler = document.getElementById('triRuler');
+  const updateRuler = () => {
+    const mid = document.querySelector('#triDemo .mid').getBoundingClientRect().width;
+    const inner = document.querySelector('#triDemo .mid-inner').getBoundingClientRect().width;
+    triRuler.textContent = `中栏 ${Math.round(mid)}px · 正文列 ${Math.round(inner)}px（限宽 720）· 一行约 ${Math.round(Math.min(mid,720)/16)} 字`;
+  };
+  document.getElementById('tglRail').addEventListener('click', (e) => {
+    railDemo.classList.toggle('mini');
+    e.target.textContent = railDemo.classList.contains('mini') ? '展开左栏' : '收起左栏';
+    setTimeout(updateRuler, 260);
+  });
+  document.getElementById('tglSide').addEventListener('click', (e) => {
+    sideDemo.classList.toggle('mini');
+    e.target.textContent = sideDemo.classList.contains('mini') ? '展开右栏' : '收起右栏';
+    setTimeout(updateRuler, 260);
+  });
+  document.getElementById('tglNarrow').addEventListener('click', (e) => {
+    const f = document.querySelector('.tab-frame');
+    const narrow = f.style.width === '800px';
+    f.style.width = narrow ? '' : '800px';
+    f.style.margin = narrow ? '' : '0 auto';
+    e.target.textContent = narrow ? '切换 800 竖直' : '切回 1180 横屏';
+    setTimeout(updateRuler, 260);
+  });
+  updateRuler();
+</script>
+</body>
+</html>
