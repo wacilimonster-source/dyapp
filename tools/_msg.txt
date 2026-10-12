@@ -1,7 +1,0 @@
-fix(ci): 非 Windows 缺 platform_open，Linux 编译不过（E0425）
-
-open() 改成按密文头分派后，非 Windows 上也会调到 platform_open，
-而它只有 #[cfg(windows)] 一份 —— Windows 本地 check 一直绿，CI 的 Linux 任务先炸。
-
-补上 #[cfg(not(windows))] 的占位实现：给出「这是 Windows(DPAPI) 密文，请在本机重填 Key」
-的可读报错，而不是编译不过或 panic；并加一条只在 CI Linux 上执行的非 Windows 测试守住它。
