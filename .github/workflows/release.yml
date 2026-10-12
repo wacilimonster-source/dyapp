@@ -1,0 +1,45 @@
+name: release
+
+# 打 tag 即发版：tag 形如 v0.1.0，且必须与 VERSION 文件一致。
+# 客户端「检查更新」读取的就是这里的 Release（tag = 版本号，body = 更新说明）。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 tag 与 VERSION 一致
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(tr -d '[:space:]' < VERSION)"
+          echo "tag=$TAG  VERSION=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 VERSION($VER) 不一致，先改 VERSION 再打 tag"
+            exit 1
+          fi
+
+      - name: 打包原型（当前可交付物）
+        run: |
+          cd prototype
+          zip -r "../dyapp-prototype-${GITHUB_REF_NAME}.zip" . -x '*.DS_Store' '*/__MACOSX/*'
+          ls -lh "../dyapp-prototype-${GITHUB_REF_NAME}.zip"
+
+      # 安卓壳工程接入后，在这里补上 Gradle/Tauri 构建，把 APK 一并作为 release asset 上传，
+      # 客户端即可从其 browser_download_url 直接下载安装（见 docs/02-发布与更新机制.md）。
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "dyapp-prototype-${GITHUB_REF_NAME}.zip" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

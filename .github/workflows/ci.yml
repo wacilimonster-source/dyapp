@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 原型 JS 语法检查
+        run: |
+          for f in prototype/*.js; do
+            echo "check $f"
+            node --check "$f"
+          done
+
+      - name: 版本号单一真源校验（VERSION 与 update.js 必须一致）
+        run: |
+          FILE_VER="$(tr -d '[:space:]' < VERSION)"
+          JS_VER="$(sed -n "s/.*const VERSION = '\([^']*\)'.*/\1/p" prototype/update.js | head -1)"
+          echo "VERSION=$FILE_VER  update.js=$JS_VER"
+          test -n "$FILE_VER" && test "$FILE_VER" = "$JS_VER"
+
+      - name: 原型不得引用外部 CDN
+        run: |
+          if grep -rInE 'https?://[^"'"'"' )]*\.(js|css|woff2?|ttf)' prototype/ ; then
+            echo "::error::原型引用了外部 CDN 资源，违反离线约束"
+            exit 1
+          fi
+          echo "OK：无外部样式/脚本/字体引用"

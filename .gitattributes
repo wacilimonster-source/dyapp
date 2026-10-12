@@ -1,0 +1,20 @@
+# 统一换行：仓库内一律 LF（Windows 工作区也不再产生 CRLF 噪音）
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.apk binary
+*.aab binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+# GitHub Actions / shell 必须 LF
+*.yml text eol=lf
+*.sh text eol=lf

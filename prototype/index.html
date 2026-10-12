@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d1220">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>道渊 · 独立版原型</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="stage-wrap">
+  <div id="app" data-device="phone">
+
+    <!-- ========== 启动 / 主菜单 ========== -->
+    <section class="screen active" id="s-boot">
+      <div id="boot-bg"><span class="glow g1"></span><span class="glow g2"></span></div>
+      <div class="menu">
+        <div class="logo">道渊</div>
+        <div class="sub">AI · 修 仙 · 沙 盒</div>
+        <button class="mbtn primary" data-go="create"><span class="ic">✦</span>开 始 仙 途</button>
+        <button class="mbtn" data-go="game"><span class="ic">▸</span>继 续 游 历</button>
+        <button class="mbtn" data-go="panels" data-panel="wiki"><span class="ic">📖</span>图 鉴 · 百 科</button>
+        <button class="mbtn" data-go="panels" data-panel="设置"><span class="ic">⚙</span>设 置</button>
+        <button class="mbtn" id="btn-about"><span class="ic">☯</span>关 于 本 作</button>
+        <div class="ver" id="boot-ver">原型 v0.1.0 · 安卓手机 / 平板 · 未连接 LLM</div>
+        <div id="update-chip"></div>
+        <div class="legal">
+          《道渊》原著 · Discord 类脑社区 · 玖神｜禁止商用 · 二传 · 倒卖<br>
+          本原型仅为界面演示，不含原作文本分发；内容与原作角色卡完全一致
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 创角向导 ========== -->
+    <section class="screen" id="s-create">
+      <div class="cr-head">
+        <button class="back" id="cr-back">‹</button>
+        <div class="title">重 塑 仙 缘</div>
+        <button class="back" id="cr-skip" title="跳过">»</button>
+      </div>
+      <div class="steps" id="cr-steps"></div>
+      <div class="cr-body" id="cr-body"></div>
+      <div class="cr-foot" id="cr-foot"></div>
+    </section>
+
+    <!-- ========== 游戏主界面 ========== -->
+    <section class="screen" id="s-game">
+      <!-- 左侧导航栏（平板显示） -->
+      <nav class="rail" id="rail"></nav>
+
+      <div class="stage">
+        <header class="hud" id="hud"></header>
+        <div class="stream" id="stream"></div>
+        <footer class="actions" id="actions"></footer>
+      </div>
+
+      <!-- 右侧状态面板（平板常驻 / 手机抽屉） -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sb-head">
+          <span class="t" id="sb-title">主角</span>
+          <button class="close" id="sb-close">×</button>
+        </div>
+        <div class="sb-tabs" id="sb-tabs"></div>
+        <div class="sb-body" id="sb-body"></div>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+    </section>
+
+    <!-- ========== 判定演出 ========== -->
+    <div class="overlay" id="judge">
+      <div class="judge" id="judge-box"></div>
+    </div>
+
+  </div>
+
+  <!-- 桌面预览：手机 / 平板版式切换（真机隐藏） -->
+  <div id="devbar">
+    <button data-layout-set="phone" class="on">手机</button>
+    <button data-layout-set="tablet">平板</button>
+  </div>
+</div>
+<script src="data.js"></script>
+<script src="update.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
