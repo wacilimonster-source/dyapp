@@ -129,8 +129,9 @@ button { background: none; border: 0; cursor: pointer; }
 .cr-hint { color: var(--faint); font-size: 0.76rem; margin-bottom: 16px; line-height: 1.7; }
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 0.8rem; color: var(--purple); margin-bottom: 6px; letter-spacing: 1px; }
-.field input, .field select { width: 100%; min-height: var(--tap); padding: 11px 12px; background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--txt); }
-.field input:focus, .field select:focus { outline: none; border-color: var(--gold); }
+.field input, .field select, .field textarea { width: 100%; min-height: var(--tap); padding: 11px 12px; background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--txt); }
+.field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--gold); }
+.field textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 0.82rem; line-height: 1.6; }
 .opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .opt { min-height: var(--tap); padding: 12px; text-align: left; border: 1px solid var(--line); border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.2); color: var(--dim); font-size: 0.86rem; transition: all 0.18s; }

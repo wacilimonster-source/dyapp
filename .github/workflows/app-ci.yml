@@ -41,6 +41,10 @@ jobs:
       - name: 编译检查
         run: cargo check --manifest-path app/src-tauri/Cargo.toml
 
+      # 密钥加密、存档读写等纯逻辑单测（不联网、不依赖 GUI）
+      - name: Rust 单元测试
+        run: cargo test --lib --manifest-path app/src-tauri/Cargo.toml
+
       - name: Clippy（不阻断，仅提示）
         run: cargo clippy --manifest-path app/src-tauri/Cargo.toml || true
 

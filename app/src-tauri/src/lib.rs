@@ -1,3 +1,4 @@
+mod crypto;
 mod error;
 mod llm;
 mod paths;

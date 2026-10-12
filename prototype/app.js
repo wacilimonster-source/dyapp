@@ -765,6 +765,32 @@ import { createStore, newSaveId } from './store/index.js';
     renderSidebar();
   }
 
+  /** 请求头 ↔ 文本框（每行「名: 值」）。 */
+  function headersToText(map) {
+    const o = map && typeof map === 'object' ? map : {};
+    return Object.entries(o).map(([k, v]) => `${k}: ${v}`).join('
+');
+  }
+  function textToHeaders(text) {
+    const out = {};
+    for (const line of String(text || '').split(/?
+/)) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const i = t.indexOf(':');
+      if (i <= 0) continue;
+      const k = t.slice(0, i).trim();
+      const v = t.slice(i + 1).trim();
+      if (k && v) out[k] = v;
+    }
+    return out;
+  }
+  /** 随机会话 ID：只在本机生成与使用。 */
+  function newSessionId() {
+    const hex = (n) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
+  }
+
   /* ================= 侧栏面板 ================= */
   function renderSidebar() {
     $('#sb-title').textContent = curPanel;
@@ -825,6 +851,15 @@ import { createStore, newSaveId } from './store/index.js';
         const base = $('#cfg-base'), path = $('#cfg-path');
         if (base) base.value = b.dataset.base || '';
         if (path) path.value = '/chat/completions';
+        // 该渠道要求额外请求头：自动补一条，值随机、仅本机
+        let auto = {};
+        try { auto = JSON.parse(b.dataset.headers || '{}'); } catch { auto = {}; }
+        const ta = $('#cfg-headers');
+        if (ta) {
+          const filled = Object.entries(auto).map(([k, v]) => `${k}: ${v === 'uuid' ? newSessionId() : v}`);
+          if (filled.length) ta.value = filled.join('
+');
+        }
       }));
 
       const readForm = () => {
@@ -842,7 +877,7 @@ import { createStore, newSaveId } from './store/index.js';
             systemRole: 'system',
             supportsStream: true,
             requiresApiKey: pid !== 'ollama',
-            defaultHeaders: (prev.provider && prev.provider.defaultHeaders) || {},
+            defaultHeaders: textToHeaders($('#cfg-headers').value),
           },
           narrator: {
             model: $('#cfg-model').value.trim(),
@@ -1158,17 +1193,20 @@ import { createStore, newSaveId } from './store/index.js';
       };
       const p = s.provider, n = s.narrator || {};
       const sec = LLM.secrets || {};
-      const presets = { openai: 'OpenAI', ollama: 'Ollama（本地）', custom: '自定义 OpenAI 兼容' };
+      const presets = { openai: 'OpenAI', opencodego: 'opencodego', ollama: 'Ollama（本地）', custom: '自定义 OpenAI 兼容' };
       return `${LLM.shell ? '' : shellNote()}
         <div class="cr-hint">API Key <b>只保存在本机</b>（安卓为应用私有目录），不进存档、不进同步、不上传任何服务器。请求由客户端本机直发。</div>
         <div class="field"><label>接口预设</label>
           <div class="opts">${Object.keys(presets).map((k) =>
-        `<button class="opt ${p.id === k ? 'on' : ''}" data-prov="${k}" data-base="${esc((D.PROVIDER_PRESETS[k] || {}).baseUrl || '')}" data-needkey="${(D.PROVIDER_PRESETS[k] || {}).requiresApiKey ? 1 : 0}">${presets[k]}</button>`).join('')}</div>
+        `<button class="opt ${p.id === k ? 'on' : ''}" data-prov="${k}" data-base="${esc((D.PROVIDER_PRESETS[k] || {}).baseUrl || '')}" data-headers="${esc(JSON.stringify((D.PROVIDER_PRESETS[k] || {}).autoHeaders || {}))}">${presets[k]}</button>`).join('')}</div>
         </div>
         <div class="field"><label>接口地址 base URL</label><input id="cfg-base" value="${esc(p.baseUrl || '')}" placeholder="https://api.openai.com/v1"></div>
         <div class="field"><label>对话路径</label><input id="cfg-path" value="${esc(p.endpointPath || '/chat/completions')}"></div>
         <div class="field"><label>API Key${sec.llmKeySet ? ' · 已保存 ' + esc(sec.llmKeyHint) : ''}</label>
           <input id="cfg-key" type="password" autocomplete="off" placeholder="${sec.llmKeySet ? '留空则不改动' : 'sk-…'}"></div>
+        <div class="field"><label>附加请求头（每行一条「名: 值」，可留空）</label>
+          <textarea id="cfg-headers" rows="3" placeholder="x-opencode-session: &lt;你的会话 ID&gt;">${esc(headersToText(p.defaultHeaders))}</textarea>
+          <div class="cr-hint" style="margin-top:4px">部分渠道强制要求额外头（如 opencodego 的 x-opencode-session）。会话 ID 随机生成、只在本机使用。</div></div>
         <div class="field"><label>叙事模型（主）</label><input id="cfg-model" value="${esc(n.model || '')}" placeholder="gpt-4o"></div>
         <div class="opts">
           <div class="field" style="margin:0"><label>温度</label><input id="cfg-temp" value="${n.temperature != null ? n.temperature : 0.85}"></div>

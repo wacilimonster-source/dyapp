@@ -172,6 +172,8 @@ window.DY = (function () {
     openai: { baseUrl: 'https://api.openai.com/v1', endpointPath: '/chat/completions', requiresApiKey: true },
     ollama: { baseUrl: 'http://127.0.0.1:11434/v1', endpointPath: '/chat/completions', requiresApiKey: false },
     custom: { baseUrl: '', endpointPath: '/chat/completions', requiresApiKey: true },
+    // 需要会话头的渠道：选中后自动补一条 x-opencode-session（值随机生成，仅本机）
+    opencodego: { baseUrl: 'https://opencode.ai/zen/go/v1', endpointPath: '/chat/completions', requiresApiKey: true, autoHeaders: { 'x-opencode-session': 'uuid' } },
   };
 
   return { RES, CRISIS, DAO_STAGE, VAGUE, REALM_DC, DC_TIERS, state, turns, LUCK_POOL, ROOT_TIERS, WORLD, PROVIDER_PRESETS };

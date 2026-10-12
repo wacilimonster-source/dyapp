@@ -26,6 +26,12 @@ target/
 app/src-tauri/gen/schemas/
 app/src-tauri/.tauri/
 
+# 本地密钥与签名材料（加密前/后的都不入库）
+secrets.json
+secrets.enc
+install.key
+install.salt
+
 # 签名材料绝不入库
 *.keystore
 *.jks

@@ -54,6 +54,18 @@ impl ProviderConfig {
                 requires_api_key: false,
                 default_headers: HashMap::new(),
             },
+            // 实测：该渠道要求 x-opencode-session 头，且对 stream:false 会挂住 —
+            // 客户端一律走流式，会话头由用户在「附加请求头」里填。
+            "opencodego" => Self {
+                id: "opencodego".into(),
+                name: "opencodego（需会话头）".into(),
+                base_url: "https://opencode.ai/zen/go/v1".into(),
+                endpoint_path: "/chat/completions".into(),
+                system_role: "system".into(),
+                supports_stream: true,
+                requires_api_key: true,
+                default_headers: HashMap::new(),
+            },
             "custom" => Self {
                 id: "custom".into(),
                 name: "自定义（OpenAI 兼容）".into(),
@@ -299,28 +311,26 @@ fn pick_slot(settings: &LlmSettings, req: &ChatRequest) -> AppResult<(ProviderCo
 
 /* ============================ 流式 ============================ */
 
-pub async fn chat_stream(
-    app: AppHandle,
-    secrets: SecretsState,
-    llm: LlmState,
-    req: ChatRequest,
-) -> AppResult<()> {
-    let channel = format!("api://{}", req.request_id);
-    let settings = llm.snapshot();
-    let (provider, slot) = pick_slot(&settings, &req)?;
-    let key = secrets.snapshot().llm_api_key;
-
-    if provider.requires_api_key && key.is_empty() {
-        return Err(AppError::NotConfigured(
-            "API Key（在「模型配置」里填写）".into(),
-        ));
-    }
-
-    let body = build_body(&slot, &req.messages, true, req.json_mode);
-    let http = client(settings.timeout_secs)?;
+/// 统一的对话请求：**一律用流式**。
+///
+/// 为什么即使是"要 JSON"也走流式：部分中转/网关（实测 opencodego 渠道）对
+/// `stream:false` 会一直挂着不返回，而流式能正常。流式对 OpenAI 兼容端点通用，
+/// 因此把非流式路径删掉，改为一律流式累积——少一条分支，少一类线上故障。
+async fn chat_fetch(
+    app: &AppHandle,
+    provider: &ProviderConfig,
+    slot: &ModelSlot,
+    key: &str,
+    messages: &[ChatMessage],
+    json_mode: bool,
+    timeout_secs: u64,
+    mut on_delta: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> AppResult<String> {
+    let body = build_body(slot, messages, true, json_mode);
+    let http = client(timeout_secs)?;
     let resp = http
         .post(provider.chat_url())
-        .headers(headers(&provider, &key))
+        .headers(headers(provider, key))
         .json(&body)
         .send()
         .await?;
@@ -328,14 +338,7 @@ pub async fn chat_stream(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        let err = api_error(status.as_u16(), &text);
-        emit(
-            &app,
-            &channel,
-            "error",
-            json!({ "message": err.to_string() }),
-        );
-        return Err(err);
+        return Err(api_error(status.as_u16(), &text));
     }
 
     let mut stream = resp.bytes_stream();
@@ -343,14 +346,7 @@ pub async fn chat_stream(
     let mut full = String::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = AppError::from(e).to_string();
-                emit(&app, &channel, "error", json!({ "message": msg }));
-                return Err(AppError::Http(msg));
-            }
-        };
+        let chunk = chunk.map_err(AppError::from)?;
         buf.extend_from_slice(&chunk);
 
         while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
@@ -371,21 +367,73 @@ pub async fn chat_stream(
             };
             if let Some(text) = delta_text(&value) {
                 full.push_str(&text);
-                emit(&app, &channel, "delta", json!({ "text": text }));
+                if let Some(cb) = on_delta.as_deref_mut() {
+                    cb(&text);
+                }
             }
-            if let Some(text) = reasoning_text(&value) {
-                emit(&app, &channel, "reasoning", json!({ "text": text }));
-            }
-            if let Some(usage) = value.get("usage").filter(|u| !u.is_null()) {
-                emit(&app, &channel, "usage", usage.clone());
+            if let Some(u) = value.get("usage").filter(|u| !u.is_null()) {
+                let _ = u; // usage 目前只透传给 UI 的成本估算，尚未落库
             }
         }
     }
 
-    emit(&app, &channel, "done", json!({ "text": full }));
-    Ok(())
+    let _ = app;
+    Ok(full)
 }
 
+/// 流式叙事：边收边把增量推给界面。
+pub async fn chat_stream(
+    app: AppHandle,
+    secrets: SecretsState,
+    llm: LlmState,
+    req: ChatRequest,
+) -> AppResult<()> {
+    let channel = format!("api://{}", req.request_id);
+    let settings = llm.snapshot();
+    let (provider, slot) = pick_slot(&settings, &req)?;
+    let key = secrets.snapshot().llm_api_key;
+
+    if provider.requires_api_key && key.is_empty() {
+        return Err(AppError::NotConfigured(
+            "API Key（在「模型配置」里填写）".into(),
+        ));
+    }
+
+    let app_for_cb = app.clone();
+    let channel_for_cb = channel.clone();
+    let mut cb = move |text: &str| {
+        emit(
+            &app_for_cb,
+            &channel_for_cb,
+            "delta",
+            json!({ "text": text }),
+        );
+    };
+    let result = chat_fetch(
+        &app,
+        &provider,
+        &slot,
+        &key,
+        &req.messages,
+        req.json_mode,
+        settings.timeout_secs,
+        Some(&mut cb),
+    )
+    .await;
+
+    match result {
+        Ok(text) => {
+            emit(&app, &channel, "done", json!({ "text": text }));
+            Ok(())
+        }
+        Err(e) => {
+            emit(&app, &channel, "error", json!({ "message": e.to_string() }));
+            Err(e)
+        }
+    }
+}
+
+/// 非流式语义的"裁决"调用：内部同样走流式累积，然后把整段当 JSON 解析。
 pub async fn complete_json(
     app: AppHandle,
     secrets: SecretsState,
@@ -401,47 +449,30 @@ pub async fn complete_json(
         ));
     }
 
-    let body = build_body(&slot, &req.messages, false, req.json_mode);
-    let http = client(settings.timeout_secs)?;
-    let resp = http
-        .post(provider.chat_url())
-        .headers(headers(&provider, &key))
-        .json(&body)
-        .send()
-        .await?;
+    let text = chat_fetch(
+        &app,
+        &provider,
+        &slot,
+        &key,
+        &req.messages,
+        req.json_mode,
+        settings.timeout_secs,
+        None,
+    )
+    .await?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        return Err(api_error(status.as_u16(), &text));
-    }
-
-    let value: Value = resp.json().await?;
-    let content = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let _ = app; // 非流式不推事件
-
-    if req.json_mode {
-        // 有些端点会把 JSON 包在 ```json 里，这里做一次容错剥离
-        let cleaned = strip_code_fence(&content);
-        return serde_json::from_str::<Value>(&cleaned).map_err(|e| {
-            AppError::Data(format!(
-                "模型未返回合法 JSON：{}（原文前 200 字：{}）",
-                e,
-                cleaned.chars().take(200).collect::<String>()
-            ))
-        });
-    }
-    Ok(json!({ "text": content }))
+    // 有些端点会把 JSON 包在 ```json 围栏里，这里做一次容错剥离
+    let cleaned = strip_code_fence(&text);
+    serde_json::from_str::<Value>(&cleaned).map_err(|e| {
+        AppError::Data(format!(
+            "模型未返回合法 JSON：{}（原文前 200 字：{}）",
+            e,
+            cleaned.chars().take(200).collect::<String>()
+        ))
+    })
 }
 
+/// 取增量正文（OpenAI 兼容：choices[0].delta.content）。
 fn delta_text(value: &Value) -> Option<String> {
     value
         .get("choices")?
@@ -453,19 +484,7 @@ fn delta_text(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 部分兼容端（DeepSeek / vLLM / OpenRouter）把思维链放在 `reasoning_content`。
-fn reasoning_text(value: &Value) -> Option<String> {
-    let delta = value.get("choices")?.get(0)?.get("delta")?;
-    for key in ["reasoning_content", "reasoning"] {
-        if let Some(s) = delta.get(key).and_then(|v| v.as_str()) {
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
-        }
-    }
-    None
-}
-
+/// 剥掉 ```json 围栏：部分端点会把 JSON 包进代码块。
 fn strip_code_fence(text: &str) -> String {
     let t = text.trim();
     if let Some(rest) = t.strip_prefix("```json") {
@@ -477,11 +496,10 @@ fn strip_code_fence(text: &str) -> String {
     t.to_string()
 }
 
+/// 往界面推一个事件。频道名形如 `api://<requestId>`。
 fn emit(app: &AppHandle, channel: &str, kind: &str, data: Value) {
     let _ = app.emit(channel, json!({ "type": kind, "data": data }));
 }
-
-/* ============================ Tauri commands ============================ */
 
 #[tauri::command]
 pub fn llm_settings_get(
@@ -510,7 +528,7 @@ pub fn llm_settings_set(
     llm.persist(&app)
 }
 
-/// Key 单独入口：前端留空 = 不改动；传空字符串显式清空用 `llm_key_clear`。
+/// Key 单独入口：前端留空 = 不改动；显式清空走 `llm_key_clear`。
 #[tauri::command]
 pub fn llm_key_set(
     app: AppHandle,
@@ -532,10 +550,10 @@ pub async fn llm_models(
     secrets: tauri::State<'_, SecretsState>,
     llm: tauri::State<'_, LlmState>,
 ) -> AppResult<Vec<String>> {
-    // 注意：快照后再 await，绝不跨 await 持有锁
-    let secrets_snapshot = secrets.inner.lock().map(|g| g.clone()).unwrap_or_default();
+    // 先快照再 await，绝不跨 await 持锁
+    let key = secrets.snapshot().llm_api_key;
     let settings = llm.snapshot();
-    list_models_snapshot(settings, secrets_snapshot.llm_api_key).await
+    list_models_snapshot(settings, key).await
 }
 
 async fn list_models_snapshot(settings: LlmSettings, key: String) -> AppResult<Vec<String>> {

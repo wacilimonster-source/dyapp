@@ -1,11 +1,11 @@
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+use crate::crypto;
 use crate::error::AppResult;
-use crate::paths::{config_dir, read_to_string, write_atomic};
+use crate::paths::config_dir;
 
 /// 只存在本机的东西：大模型 API Key、同步用的 GitHub 令牌。
 ///
@@ -63,14 +63,36 @@ pub struct SecretsState {
 
 impl SecretsState {
     pub fn load(app: &AppHandle) -> AppResult<Self> {
-        let path = secrets_path(app)?;
-        let secrets = if path.exists() {
-            serde_json::from_str::<LocalSecrets>(&read_to_string(&path)?).unwrap_or_default()
-        } else {
-            LocalSecrets::default()
-        };
+        let dir = config_dir(app)?;
+
+        // 首选加密文件
+        if let Ok(Some(bytes)) = crypto::read_sealed(&dir, "secrets.enc") {
+            let parsed = serde_json::from_slice::<LocalSecrets>(&bytes).unwrap_or_default();
+            return Ok(Self {
+                inner: Mutex::new(parsed),
+            });
+        }
+
+        // 迁移：旧版本的明文 secrets.json —— 加密后就地删除明文，不留在磁盘上
+        if let Some(text) = crypto::read_legacy_plaintext(&dir, "secrets.json") {
+            if crypto::looks_like_json(text.as_bytes()) {
+                let parsed = serde_json::from_str::<LocalSecrets>(&text).unwrap_or_default();
+                let state = Self {
+                    inner: Mutex::new(parsed),
+                };
+                match state.persist(app) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(dir.join("secrets.json"));
+                        eprintln!("[crypto] 已把明文 secrets.json 迁移为加密存储，并删除明文");
+                    }
+                    Err(e) => eprintln!("[crypto] 明文迁移失败，仍按明文读取：{e}"),
+                }
+                return Ok(state);
+            }
+        }
+
         Ok(Self {
-            inner: Mutex::new(secrets),
+            inner: Mutex::new(LocalSecrets::default()),
         })
     }
 
@@ -80,11 +102,10 @@ impl SecretsState {
 
     pub fn persist(&self, app: &AppHandle) -> AppResult<()> {
         let value = self.snapshot();
-        let path = secrets_path(app)?;
-        let json = serde_json::to_vec_pretty(&value)?;
-        write_atomic(&path, &json)?;
-        restrict_permissions(&path);
-        Ok(())
+        let mut json = serde_json::to_vec_pretty(&value)?;
+        let result = crypto::write_sealed(&config_dir(app)?, "secrets.enc", &json);
+        crypto::wipe(&mut json); // 减少明文在内存里的驻留窗口
+        result
     }
 
     /// 只更新"非空"的字段：前端留空表示"不改动"，避免误清空已存的 Key。
@@ -118,23 +139,6 @@ impl SecretsState {
             .map_err(|_| crate::error::AppError::Other("密钥状态被占用".into()))?;
         guard.sync_token.clear();
         Ok(())
-    }
-}
-
-fn secrets_path(app: &AppHandle) -> AppResult<PathBuf> {
-    Ok(config_dir(app)?.join("secrets.json"))
-}
-
-/// 尽量收紧权限（Android / Linux / macOS）；Windows 走用户目录 ACL。
-fn restrict_permissions(path: &PathBuf) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
     }
 }
 
