@@ -22,7 +22,8 @@ export const LAYER_BUDGET = Object.freeze({
 /** L0：协议层。措辞要短、要硬——这是模型唯一必须遵守的部分。 */
 export const L0_PROTOCOL = [
   '你是《道渊》的叙事引擎。',
-  '只输出剧情正文。禁止输出 JSON、HTML、状态栏、变量块、系统说明或思维过程。',
+  '只输出剧情正文。禁止输出 JSON、HTML、XML、状态栏、变量块、系统说明或思维过程。',
+  '特别禁止输出任何尖括号标记，例如 <data_block>、<UpdateVariable>、<StatusPlaceHolderImpl/>、<threat_level>、<inventory>、<skills> 等——状态由本地引擎维护，你不需要报告任何数值。',
   '境界、数值、时间、遭遇全部由本地引擎裁定；你不计算、不改写数值。',
   '不替玩家做决定；不描写玩家未选择的行为；不剧透玩家尚未接触的设定。',
   '文风：玄天界修仙，第三人称限知视角，中文，冷静克制，重细节与留白。每段 150–400 字。',

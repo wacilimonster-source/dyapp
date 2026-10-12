@@ -51,7 +51,9 @@ test('buildIndex：常驻与可检索分离，常驻不参与 Top-K', () => {
   assert.equal(idx.constant.every((e) => e.constant), true);
   assert.equal(idx.entries.some((e) => e.constant), false);
   assert.equal(idx.stats.total, worldbook.entries.length);
-  assert.equal(idx.stats.constant + idx.stats.searchable, worldbook.entries.length);
+  // 机制条目（状态栏 / mvu / 变量输出格式）被排除，不进提示词
+  assert.ok(idx.stats.excluded > 0, '世界书里应有被排除的机制条目');
+  assert.equal(idx.stats.constant + idx.stats.searchable + idx.stats.excluded, worldbook.entries.length);
 });
 
 test('buildIndex：按出生界过滤仙界专属条目', () => {

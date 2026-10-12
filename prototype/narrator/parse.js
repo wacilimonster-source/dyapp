@@ -9,6 +9,33 @@ const CRISIS = new Set(['无', '低', '中', '高']);
 const MAX_CHOICES = 4;
 const MAX_CHOICE_LEN = 40;
 
+/**
+ * 模型的"状态标记"开头位置；找不到返回 -1。
+ *
+ * 用途：流式输出时一旦出现这些标记就**截断显示**，避免玩家看着看着
+ * 突然冒出一整块 XML。
+ */
+export function stateBlockIndex(text) {
+  const RE = new RegExp("<(?:data_block|UpdateVariable|Analysis)\\b", "i");
+  const m = RE.exec(String(text == null ? "" : text));
+  return m ? m.index : -1;
+}
+
+export function sanitizeNarrative(text) {
+  let out = String(text == null ? "" : text);
+  const block = (tag) => new RegExp("<" + tag + "\\b[\\s\\S]*?<\/" + tag + ">", "gi");
+  for (const tag of ["data_block", "UpdateVariable", "Analysis"]) out = out.replace(block(tag), "");
+  const cut = stateBlockIndex(out);
+  if (cut >= 0) out = out.slice(0, cut);
+  out = out.replace(new RegExp("<\\/?(?:data_block|UpdateVariable|Analysis|StatusPlaceHolderImpl)\\b[^>]*>", "gi"), "");
+  out = out.replace(new RegExp("<StatusPlaceHolderImpl\\s*\\/>", "gi"), "");
+  // 注意：替换串必须是真的换行字符，不能写成「反斜杠 + n」两个字面字符
+  // ——那样 trim() 收不掉尾部空行。这里用字符码构造，彻底避开转义问题。
+  const LF = String.fromCharCode(10);
+  const BLANK = LF + LF;
+  return out.replace(new RegExp(LF + "{3,}", "g"), BLANK).trim();
+}
+
 /** 从文本里剥出 JSON（兼容 ```json 围栏与前后废话）。 */
 export function extractJson(text) {
   if (text && typeof text === 'object') return text;

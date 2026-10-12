@@ -762,7 +762,9 @@ import { createStore, newSaveId } from './store/index.js';
     } else {
       SYNC.remote = [];
     }
-    renderSidebar();
+    // 只在同步面板打开时才重建：这个方法在启动时会跑一次，
+    // 无条件重建会把用户正在别的面板里填的表单冲掉（真机上实测到了）。
+    if (curPanel === '同步') renderSidebar();
   }
 
   /** 请求头 ↔ 文本框（每行「名: 值」）。 */
@@ -790,7 +792,18 @@ import { createStore, newSaveId } from './store/index.js';
   }
 
   /* ================= 侧栏面板 ================= */
-  function renderSidebar() {
+  /**
+   * 面板是否正在被编辑。
+   *
+   * 背景异步回来时会调 renderSidebar()（世界书加载完、同步列表拉到、更新检查返回），
+   * 而重建 innerHTML 会把用户**正在输入的表单冲掉**——在真机上实测到了这个丢失。
+   * 所以：只要用户动过表单，就不许背景刷新重建面板。
+   */
+  let sbDirty = false;
+  function sidebarTouched() { return sbDirty; }
+
+  function renderSidebar(force = false) {
+    if (!force && sbDirty) return; // 用户在填表，别覆盖他
     $('#sb-title').textContent = curPanel;
     $('#sb-tabs').innerHTML = PANELS.map((p) => `<button class="tab ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}">${p.icon} ${p.id}</button>`).join('');
     $('#sb-body').innerHTML = panelHTML(curPanel);
@@ -999,13 +1012,26 @@ import { createStore, newSaveId } from './store/index.js';
     $$('#rail [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
     $('#rail-home').addEventListener('click', () => showScreen('s-boot'));
   }
-  function openPanel(name) {
-    curPanel = name; renderSidebar();
+  function openPanel(name, { reset = false } = {}) {
+    const switching = name !== curPanel || reset;
+    curPanel = name;
+    // 只有真的换了面板才允许清掉编辑态并强制重建；
+    // 重复点同一个 tab 不该把用户正在填的内容冲掉。
+    if (switching) sbDirty = false;
+    renderSidebar(switching);
     if (!isTablet()) { $('#sidebar').classList.add('open'); $('#scrim').classList.add('open'); }
   }
   function closePanel() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('open'); }
   $('#sb-close').addEventListener('click', closePanel);
   $('#scrim').addEventListener('click', closePanel);
+
+  // 编辑态跟踪：在面板里输入 → 置脏；点任意按钮 → 视为编辑结束（但不清空输入框的值）
+  $('#sb-body').addEventListener('input', () => { sbDirty = true; });
+  $('#sb-body').addEventListener('change', () => { sbDirty = true; });
+  // 捕获阶段：必须早于按钮自身的处理器，否则处理器里同步调的 renderSidebar 仍会被挡
+  $('#sb-body').addEventListener('click', (e) => {
+    if (!e.target.closest('input, textarea, select')) sbDirty = false;
+  }, true);
 
   function panelHTML(id) {
     const P = state.主角, W = state.世界;

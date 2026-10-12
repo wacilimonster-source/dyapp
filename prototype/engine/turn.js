@@ -15,7 +15,7 @@ import { advanceTime, deriveTime, TIME_SLOTS, SEASONS } from './time.js';
 import { retrieve } from '../memory/retrieve.js';
 import { composeNarrative, composeArbiter } from '../narrator/prompt.js';
 import { streamNarrative, decide } from '../narrator/client.js';
-import { parseTurnResult } from '../narrator/parse.js';
+import { parseTurnResult, sanitizeNarrative, stateBlockIndex } from '../narrator/parse.js';
 
 export { advanceTime, deriveTime, TIME_SLOTS, SEASONS };
 
@@ -145,8 +145,17 @@ export async function runTurn(input) {
     hints,
   });
 
-  const streamed = await streamNarrative(llm, messages, onDelta, {});
-  let narrative = streamed.text;
+  // 流式期间就截断：一旦模型开始吐状态标记，界面立即停止追加，
+  // 避免玩家眼看着正文里长出一整块 XML。
+  const onDeltaSafe = onDelta
+    ? (chunk, full) => {
+      const cut = stateBlockIndex(full);
+      onDelta(chunk, cut >= 0 ? full.slice(0, cut) : full);
+    }
+    : undefined;
+
+  const streamed = await streamNarrative(llm, messages, onDeltaSafe, {});
+  let narrative = sanitizeNarrative(streamed.text);
   let source = streamed.ok ? 'llm' : 'fallback';
 
   if (!streamed.ok) {
