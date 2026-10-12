@@ -28,6 +28,9 @@ jobs:
           echo "VERSION=$FILE_VER  update.js=$JS_VER"
           test -n "$FILE_VER" && test "$FILE_VER" = "$JS_VER"
 
+      - name: 内核与记忆/叙事层单元测试
+        run: node --test
+
       - name: 原型不得引用外部 CDN
         run: |
           if grep -rInE 'https?://[^"'"'"' )]*\.(js|css|woff2?|ttf)' prototype/ ; then
