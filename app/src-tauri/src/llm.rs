@@ -317,7 +317,6 @@ fn pick_slot(settings: &LlmSettings, req: &ChatRequest) -> AppResult<(ProviderCo
 /// `stream:false` 会一直挂着不返回，而流式能正常。流式对 OpenAI 兼容端点通用，
 /// 因此把非流式路径删掉，改为一律流式累积——少一条分支，少一类线上故障。
 async fn chat_fetch(
-    app: &AppHandle,
     provider: &ProviderConfig,
     slot: &ModelSlot,
     key: &str,
@@ -377,7 +376,6 @@ async fn chat_fetch(
         }
     }
 
-    let _ = app;
     Ok(full)
 }
 
@@ -410,7 +408,6 @@ pub async fn chat_stream(
         );
     };
     let result = chat_fetch(
-        &app,
         &provider,
         &slot,
         &key,
@@ -435,7 +432,7 @@ pub async fn chat_stream(
 
 /// 非流式语义的"裁决"调用：内部同样走流式累积，然后把整段当 JSON 解析。
 pub async fn complete_json(
-    app: AppHandle,
+    _app: AppHandle,
     secrets: SecretsState,
     llm: LlmState,
     req: ChatRequest,
@@ -450,7 +447,6 @@ pub async fn complete_json(
     }
 
     let text = chat_fetch(
-        &app,
         &provider,
         &slot,
         &key,
@@ -617,4 +613,111 @@ pub async fn llm_complete_json(
         inner: Mutex::new(llm.snapshot()),
     };
     complete_json(app, secrets_state, llm_state, req).await
+}
+
+/* ============================ 真实渠道测试 ============================ */
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// 只有同时提供三个环境变量时才真的发请求，否则**静默跳过**。
+    /// 这样 CI（无凭据）永远不会触发，密钥也永远不进仓库。
+    fn creds() -> Option<(String, String, String)> {
+        let base = std::env::var("DY_LLM_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())?;
+        let key = std::env::var("DY_LLM_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())?;
+        let model = std::env::var("DY_LLM_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())?;
+        Some((base, key, model))
+    }
+
+    fn provider_from_env(base: &str) -> ProviderConfig {
+        let mut p = ProviderConfig::preset("custom");
+        p.base_url = base.to_string();
+        // 实测渠道要求会话头；测试里给它一个稳定值
+        let mut h = HashMap::new();
+        h.insert(
+            "x-opencode-session".to_string(),
+            "dyapp-rust-live-test".to_string(),
+        );
+        p.default_headers = h;
+        p
+    }
+
+    #[tokio::test]
+    async fn 真实渠道_流式叙事可用() {
+        let Some((base, key, model)) = creds() else {
+            eprintln!("跳过：未提供 DY_LLM_BASE_URL / DY_LLM_API_KEY / DY_LLM_MODEL");
+            return;
+        };
+        let provider = provider_from_env(&base);
+        let slot = ModelSlot {
+            model,
+            temperature: 0.8,
+            top_p: 0.95,
+            max_tokens: Some(128),
+            extra_body: HashMap::new(),
+        };
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: "只回复四个字：可以开始".into(),
+        }];
+
+        let mut chunks = 0usize;
+        let mut cb = |_t: &str| chunks += 1;
+        let text = chat_fetch(&provider, &slot, &key, &msgs, false, 120, Some(&mut cb))
+            .await
+            .expect("真实渠道调用失败");
+
+        assert!(!text.trim().is_empty(), "返回内容为空");
+        assert!(chunks > 0, "没有收到任何流式增量（说明走的不是流式路径）");
+        println!(
+            "
+[Rust 真实调用] 增量 {chunks} 次，正文：{text}
+"
+        );
+    }
+
+    #[tokio::test]
+    async fn 真实渠道_json模式可解析() {
+        let Some((base, key, model)) = creds() else {
+            eprintln!("跳过：未提供 DY_LLM_* 环境变量");
+            return;
+        };
+        let provider = provider_from_env(&base);
+        let slot = ModelSlot {
+            model,
+            temperature: 0.2,
+            top_p: 0.9,
+            max_tokens: Some(256),
+            extra_body: HashMap::new(),
+        };
+        let msgs = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: "只输出一个 JSON 对象，不要解释、不要代码围栏。".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "按 {\"ok\":true,\"n\":3} 的形状返回，n 为 3。".into(),
+            },
+        ];
+
+        let text = chat_fetch(&provider, &slot, &key, &msgs, true, 120, None)
+            .await
+            .expect("真实渠道调用失败");
+        let cleaned = strip_code_fence(&text);
+        let v: Value = serde_json::from_str(&cleaned).expect("流式累积的文本不是合法 JSON");
+        assert_eq!(v.get("n").and_then(|x| x.as_i64()), Some(3));
+        println!(
+            "
+[Rust 真实调用 · JSON 模式] {v}
+"
+        );
+    }
 }
