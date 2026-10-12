@@ -44,6 +44,12 @@ export function retrieve(index, ctx = {}, opts = {}) {
   const recalled = search(index.corpus, query, { limit: recall });
   const querySet = new Set(query);
   const place = String(ctx.place || '');
+  // 地点是「青石镇 · 醉仙楼」这种拼接串，整串 includes 几乎永远失配。
+  // 拆成段（≥2 字）分别匹配，命中任一段即算地点相关。
+  const placeSegs = place
+    .split(/[·\/|,，>—-]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2);
 
   const reranked = recalled.map((r) => {
     const e = index.byId.get(r.id) || {};
@@ -61,12 +67,12 @@ export function retrieve(index, ctx = {}, opts = {}) {
     }
     if (titleHit) { mult *= weights.titleHit; why.push('标题命中'); }
 
-    // keys 命中
-    const keyHit = keys.some((k) => querySet.has(String(k)) || (place && k === place));
+    // keys 命中（触发词是查询词，或触发词就是当前地点/其中一段）
+    const keyHit = keys.some((k) => querySet.has(String(k)) || placeSegs.includes(String(k)));
     if (keyHit) { mult *= weights.keyHit; why.push('触发词命中'); }
 
-    // 当前地点出现在正文或标题
-    if (place && place.length >= 2 && (e.content || '').includes(place)) { mult *= weights.placeHit; why.push('地点相关'); }
+    // 当前地点的任一段出现在正文里
+    if (placeSegs.some((seg) => (e.content || '').includes(seg))) { mult *= weights.placeHit; why.push('地点相关'); }
 
     // 在场人物名出现在标题
     const npcInTitle = npcs.find((n) => n && n.length >= 2 && (title.includes(n) || name.includes(n)));

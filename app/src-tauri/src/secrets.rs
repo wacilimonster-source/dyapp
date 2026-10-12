@@ -148,16 +148,23 @@ impl SecretsState {
     }
 
     /// 只更新"非空"的字段：前端留空表示"不改动"，避免误清空已存的 Key。
+    /// 清空请走 [`clear_llm_key`] / [`clear_sync_token`]（语义明确，不靠传空串）。
     pub fn update(&self, llm_api_key: Option<String>, sync_token: Option<String>) -> AppResult<()> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| crate::error::AppError::Other("密钥状态被占用".into()))?;
         if let Some(k) = llm_api_key {
-            guard.llm_api_key = k.trim().to_string();
+            let t = k.trim();
+            if !t.is_empty() {
+                guard.llm_api_key = t.to_string();
+            }
         }
         if let Some(t) = sync_token {
-            guard.sync_token = t.trim().to_string();
+            let s = t.trim();
+            if !s.is_empty() {
+                guard.sync_token = s.to_string();
+            }
         }
         Ok(())
     }
@@ -183,10 +190,13 @@ impl SecretsState {
 
 /// 出网/入库前的兜底清洗：递归删掉任何看起来像密钥的字段。
 ///
-/// 这是第二道防线——第一道是"根本不放进去"。存档与同步都会过这一层，
+/// 这是第二道防线——第一道是"根本不放进去"。存档、叙事流与同步都会过这一层，
 /// 万一将来有人往 GameState 里塞了 apiKey，也不会被推到 GitHub。
+///
+/// 匹配规则分两档：精确名（apiKey/token/…）与**包含名**（accessToken、
+/// openai_api_key、clientSecret 这类变体）——只按精确名匹配会漏掉它们。
 pub fn redact_for_transfer(value: &mut serde_json::Value) {
-    const SENSITIVE: [&str; 6] = [
+    const SENSITIVE_EXACT: [&str; 6] = [
         "apiKey",
         "api_key",
         "token",
@@ -194,12 +204,17 @@ pub fn redact_for_transfer(value: &mut serde_json::Value) {
         "authorization",
         "secret",
     ];
+    const SENSITIVE_CONTAINS: [&str; 5] = ["apikey", "api_key", "token", "secret", "authorization"];
     match value {
         serde_json::Value::Object(map) => {
             let keys: Vec<String> = map.keys().cloned().collect();
             for k in keys {
                 let lower = k.to_ascii_lowercase();
-                if SENSITIVE.iter().any(|s| lower == s.to_ascii_lowercase()) {
+                let hit = SENSITIVE_EXACT
+                    .iter()
+                    .any(|s| lower == s.to_ascii_lowercase())
+                    || SENSITIVE_CONTAINS.iter().any(|s| lower.contains(s));
+                if hit {
                     map.remove(&k);
                     continue;
                 }
@@ -214,5 +229,47 @@ pub fn redact_for_transfer(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn 清洗覆盖键名变体() {
+        let mut v = json!({
+            "apiKey": "a",
+            "accessToken": "b",
+            "openai_api_key": "c",
+            "clientSecret": "d",
+            "Authorization": "e",
+            "keywords": "保留",
+            "keys": ["保留"],
+            "text": "我的key是 sk-xxx", // 值里的字面量不动（只删键）
+        });
+        redact_for_transfer(&mut v);
+        let o = v.as_object().unwrap();
+        for k in [
+            "apiKey",
+            "accessToken",
+            "openai_api_key",
+            "clientSecret",
+            "Authorization",
+        ] {
+            assert!(o.get(k).is_none(), "{k} 应被删除");
+        }
+        assert!(o.get("keywords").is_some(), "普通字段不能被误删");
+        assert!(o.get("keys").is_some(), "keys 字段不能被误删");
+        assert!(o.get("text").is_some(), "值内容不能被改动");
+    }
+
+    #[test]
+    fn 清洗会递归进数组与嵌套对象() {
+        let mut v = json!({ "turns": [{ "nested": { "refreshToken": "x" }, "ok": 1 }] });
+        redact_for_transfer(&mut v);
+        assert!(v["turns"][0]["nested"].get("refreshToken").is_none());
+        assert_eq!(v["turns"][0]["ok"], 1);
     }
 }

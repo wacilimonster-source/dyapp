@@ -153,8 +153,10 @@ test('飘字定位：限定在 #hud 内取条，并在量不到尺寸时回退�
   assert.match(APP_JS, /hr\.width === 0\) return/, '游戏页不可见时应放弃飘字而不是飘到 (0,0)');
 });
 
-test('飘字：由引擎落地事件驱动（events），而不是意图（effects）', () => {
-  assert.match(APP_JS, /for \(const ev of result\.events \|\| \[\]\)/, '飘字必须读 events');
+test('飘字与 fx chips：都由引擎落地事件驱动（events），而不是意图（effects）', () => {
+  assert.match(APP_JS, /const fxEvents = \(result\.events \|\| \[\]\)\.filter/, '飘字/chips 必须读 events');
+  assert.match(APP_JS, /for \(const ev of fxEvents\)/, '飘字循环用落地事件');
+  assert.match(APP_JS, /fx: fxEvents\.map/, '回合记录里存落地增量，重渲时 chips 才与飘字一致');
 });
 
 test('回合进行中守卫：并发点击不会再起第二个回合', () => {

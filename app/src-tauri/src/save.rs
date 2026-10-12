@@ -8,7 +8,7 @@
 //! 每个文件内部仍走 `write_atomic`，但四个文件之间的一致性由"换盘"保证 ——
 //! 掉电或被后台回收只会得到"上一版"或"这一版"，不会得到半截。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -39,6 +39,9 @@ pub struct SaveMeta {
     pub summary: String,
     #[serde(default)]
     pub playtime_ms: i64,
+    /// 存档缩略图（前端生成的 SVG data URI，极小）。旧档没有则为空串。
+    #[serde(default)]
+    pub thumb: String,
 }
 
 fn default_version() -> u32 {
@@ -82,7 +85,8 @@ fn sibling(dir: &Path, suffix: &str) -> std::path::PathBuf {
 }
 
 /// 崩溃恢复：收拾残留的临时/旧目录，保证 `<id>` 是完整的一份。
-fn heal_save_dir(dir: &Path) {
+/// （同步的推/拉路径也要先跑一次，否则可能读到换盘残骸或在 stage 时误删可恢复的旧档。）
+pub(crate) fn heal_save_dir(dir: &Path) {
     let tmp = sibling(dir, TMP_SUFFIX);
     let old = sibling(dir, OLD_SUFFIX);
     let _ = std::fs::remove_dir_all(&tmp); // 临时目录必然是半成品
@@ -137,6 +141,7 @@ fn read_bundle_at(dir: &Path, id: &str) -> AppResult<SaveBundle> {
             save_version: SAVE_VERSION,
             summary: String::new(),
             playtime_ms: 0,
+            thumb: String::new(),
         }
     };
 
@@ -206,16 +211,10 @@ pub fn write_bundle(app: &AppHandle, save_id: &str, bundle: SaveBundle) -> AppRe
 }
 
 /// 写存档的目录版：目录由调用方给出，单测可以直接喂一个临时目录。
-fn write_bundle_at(dir: &Path, id: &str, bundle: SaveBundle) -> AppResult<SaveMeta> {
+fn write_bundle_at(dir: &Path, id: &str, mut bundle: SaveBundle) -> AppResult<SaveMeta> {
     let id = id.to_string();
     let dir = dir.to_path_buf();
-    let tmp = sibling(&dir, TMP_SUFFIX);
-    let old = sibling(&dir, OLD_SUFFIX);
     let now = now_ms();
-
-    // 先扫掉上次失败的残骸，免得和这一次的临时目录打架
-    let _ = std::fs::remove_dir_all(&tmp);
-    let _ = std::fs::remove_dir_all(&old);
 
     let created = if meta_path(&dir).exists() {
         serde_json::from_str::<SaveMeta>(&read_to_string(&meta_path(&dir))?)
@@ -225,11 +224,16 @@ fn write_bundle_at(dir: &Path, id: &str, bundle: SaveBundle) -> AppResult<SaveMe
         now
     };
 
-    // 出盘前的兜底清洗：万一状态里混进了 apiKey 之类，也不落到磁盘上（更不会被同步出去）
+    // 出盘前的兜底清洗：万一状态里混进了 apiKey 之类，也不落到磁盘上（更不会被同步出去）。
+    // 叙事流（turns）同样要清洗 —— 用户可能把 Key 贴进对话里被记录。
     let mut state = bundle.state;
     redact_for_transfer(&mut state);
     let mut world = bundle.world;
     redact_for_transfer(&mut world);
+    let mut turns = std::mem::take(&mut bundle.turns);
+    for t in turns.iter_mut() {
+        redact_for_transfer(t);
+    }
 
     let meta = SaveMeta {
         id: id.clone(),
@@ -243,44 +247,61 @@ fn write_bundle_at(dir: &Path, id: &str, bundle: SaveBundle) -> AppResult<SaveMe
         save_version: SAVE_VERSION,
         summary: bundle.meta.summary,
         playtime_ms: bundle.meta.playtime_ms,
+        thumb: bundle.meta.thumb.trim().to_string(),
     };
 
-    // 全部先写进临时目录：这一步失败不会碰到正式存档
-    ensure_dir(&tmp)?;
-    write_atomic(
-        &meta_path(&tmp),
-        serde_json::to_vec_pretty(&meta)?.as_slice(),
-    )?;
-    write_atomic(
-        &state_path(&tmp),
-        serde_json::to_vec_pretty(&state)?.as_slice(),
-    )?;
-    write_atomic(
-        &world_path(&tmp),
-        serde_json::to_vec_pretty(&world)?.as_slice(),
-    )?;
-
     let mut lines = String::new();
-    for t in &bundle.turns {
+    for t in &turns {
         lines.push_str(&serde_json::to_string(t)?);
         lines.push('\n');
     }
-    write_atomic(&chat_path(&tmp), lines.as_bytes())?;
 
-    // 换盘：先把旧的整体挪开，再把临时目录就位。
-    // 这两个 rename 之间是唯一的"危险窗口"，而 heal_save_dir() 能在下次启动时把它修好。
-    if dir.exists() {
-        std::fs::rename(&dir, &old)?;
+    // 全部先写进临时目录，再整体换盘：这一步失败不会碰到正式存档
+    let files: Vec<(String, Vec<u8>)> = vec![
+        ("meta.json".into(), serde_json::to_vec_pretty(&meta)?),
+        ("state.json".into(), serde_json::to_vec_pretty(&state)?),
+        ("world.json".into(), serde_json::to_vec_pretty(&world)?),
+        ("chat.jsonl".into(), lines.into_bytes()),
+    ];
+    stage_files(&dir, &files)?;
+    commit_stage(&dir)?;
+    Ok(meta)
+}
+
+/// 把一组文件写进 `<dir>.tmp-writing/`（先清掉旧残骸），返回临时目录路径。
+///
+/// 与 [`commit_stage`] 配对使用；`sync_pull` 复用同一机制，让拉取落盘也是**整体换盘**，
+/// 不再出现"meta 已新、chat 还是旧的"的半截状态。
+pub(crate) fn stage_files(dir: &Path, files: &[(String, Vec<u8>)]) -> AppResult<PathBuf> {
+    let tmp = sibling(dir, TMP_SUFFIX);
+    let old = sibling(dir, OLD_SUFFIX);
+    let _ = std::fs::remove_dir_all(&tmp); // 上次失败的残骸
+    let _ = std::fs::remove_dir_all(&old);
+    ensure_dir(&tmp)?;
+    for (name, bytes) in files {
+        write_atomic(&tmp.join(name), bytes)?;
     }
-    match std::fs::rename(&tmp, &dir) {
+    Ok(tmp)
+}
+
+/// 把已 stage 的临时目录整体换盘。
+///
+/// 两个 rename 之间是唯一的"危险窗口"，`heal_save_dir()` 能在下次启动时把它修好。
+pub(crate) fn commit_stage(dir: &Path) -> AppResult<()> {
+    let tmp = sibling(dir, TMP_SUFFIX);
+    let old = sibling(dir, OLD_SUFFIX);
+    if dir.exists() {
+        std::fs::rename(dir, &old)?;
+    }
+    match std::fs::rename(&tmp, dir) {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(&old);
-            Ok(meta)
+            Ok(())
         }
         Err(e) => {
             // 换盘失败要把旧的换回来，不能把存档搞没了
             if old.exists() {
-                let _ = std::fs::rename(&old, &dir);
+                let _ = std::fs::rename(&old, dir);
             }
             let _ = std::fs::remove_dir_all(&tmp);
             Err(AppError::Io(format!("替换存档目录失败（已回滚）：{e}")))
@@ -377,6 +398,7 @@ pub fn save_list(app: AppHandle) -> AppResult<Vec<SaveMeta>> {
                 save_version: SAVE_VERSION,
                 summary: String::new(),
                 playtime_ms: 0,
+                thumb: String::new(),
             },
         };
         out.push(meta);
@@ -439,6 +461,7 @@ mod tests {
                 save_version: SAVE_VERSION,
                 summary: String::new(),
                 playtime_ms: 0,
+                thumb: String::new(),
             },
             state: json!({ "主角": { "灵力": lingli } }),
             turns: (0..turns)
@@ -521,5 +544,26 @@ mod tests {
         let back = read_bundle_at(&dir, "s1").unwrap();
         assert_eq!(back.state["主角"]["灵力"], 2);
         assert_eq!(back.turns.len(), 1, "叙事流不能混进上一版的行");
+    }
+
+    /// 回归：用户把 Key 贴进对话里被记进 turns，原样写盘后会随同步推上 GitHub。
+    #[test]
+    fn 叙事流里的敏感字段写盘前被清洗() {
+        let root = tmp_root("redact");
+        let dir = root.join("s1");
+        let mut b = bundle(5, 1);
+        b.turns = vec![
+            json!({ "role": "user", "text": "我的key是", "apiKey": "sk-live-123456" }),
+            json!({ "role": "assistant", "text": "收到", "nested": { "accessToken": "ghp_x" } }),
+        ];
+        write_bundle_at(&dir, "s1", b).unwrap();
+
+        let raw = std::fs::read_to_string(chat_path(&dir)).unwrap();
+        assert!(!raw.contains("sk-live"), "apiKey 必须落盘前删除：{raw}");
+        assert!(!raw.contains("ghp_x"), "accessToken 变体也必须删除：{raw}");
+        assert!(raw.contains("我的key是"), "正文本身不能被误删");
+
+        let back = read_bundle_at(&dir, "s1").unwrap();
+        assert_eq!(back.turns.len(), 2);
     }
 }

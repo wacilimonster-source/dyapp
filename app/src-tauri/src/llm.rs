@@ -422,6 +422,9 @@ async fn chat_fetch(
     let mut buf: Vec<u8> = Vec::new();
     let mut full = String::new();
 
+    // `[DONE]` 后必须立刻停止读取：部分网关不会主动断开连接，
+    // 原先用 continue 会一直挂到超时（默认 600s），用户看完全文却迟迟等不到收尾。
+    let mut done = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(AppError::from)?;
         buf.extend_from_slice(&chunk);
@@ -437,11 +440,24 @@ async fn chat_fetch(
             };
             let payload = payload.trim();
             if payload == "[DONE]" {
-                continue;
+                done = true;
+                break;
             }
             let Ok(value) = serde_json::from_str::<Value>(payload) else {
                 continue;
             };
+            // 有的端点把错误放在流内的 data 帧里（HTTP 状态是 200）
+            if let Some(err) = value.get("error") {
+                let msg = err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| err.to_string());
+                return Err(AppError::Api {
+                    status: 200,
+                    body: msg,
+                });
+            }
             if let Some(text) = delta_text(&value) {
                 full.push_str(&text);
                 if let Some(cb) = on_delta.as_deref_mut() {
@@ -451,6 +467,9 @@ async fn chat_fetch(
             if let Some(u) = value.get("usage").filter(|u| !u.is_null()) {
                 let _ = u; // usage 目前只透传给 UI 的成本估算，尚未落库
             }
+        }
+        if done {
+            break;
         }
     }
 

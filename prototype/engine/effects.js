@@ -78,11 +78,15 @@ export function applyEffect(state, effect) {
   if (op === 'delta') {
     const d = Number(effect.value);
     if (!Number.isFinite(d)) return { ok: false, log: `${path}：delta 的值不是有限数` };
+    // 境界与境界DC 只能由引擎结算（set 境界 会查表联动 DC）。
+    // 校验必须在**写入之前**：原先先写后判，境界会被静默覆盖成数字再归一成「凡」。
+    if (key === '境界' || key === '境界DC') {
+      return { ok: false, log: `${path}：${key} 不能用 delta（境界由引擎结算）` };
+    }
     const before = Number(obj[key]);
     const base = Number.isFinite(before) ? before : 0;
     const after = clampField(key, base + d, base);
     obj[key] = after;
-    if (key === '境界') return { ok: false, log: '境界不能用 delta' };
     return {
       ok: true,
       event: { kind: isPercentField(key) ? 'float' : 'change', path, key, delta: after - base, value: after },
@@ -91,6 +95,10 @@ export function applyEffect(state, effect) {
 
   if (op === 'set') {
     const value = effect.value;
+    if (key === '境界DC') {
+      // 引擎在 set 境界 时按境界表生成 DC；直接写会写出与境界不符的数字
+      return { ok: false, log: `${path}：境界DC 由引擎按境界查表生成，不接受直接写入` };
+    }
     if (key === '境界') {
       const parsed = parseRealm(String(value));
       obj[key] = realmLabel(parsed.major, parsed.minor);

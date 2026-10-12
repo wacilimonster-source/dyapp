@@ -100,9 +100,3 @@ export function createPresetStore() {
     write: (id, raw, name) => backend.write(id, raw, name),
   };
 }
-
-/** 预设 id：只允许安全字符。 */
-export function safePresetId(name, fallback = 'preset') {
-  const s = String(name || '').trim().replace(/[^A-Za-z0-9_-]/g, '');
-  return s || fallback;
-}

@@ -8,9 +8,14 @@
 
 import { applyAll } from './effects.js';
 import { normalize } from './state.js';
-import { advanceRealm, cultivate, breakthroughChance, parseRealm, realmIndex } from './rules.js';
+import {
+  advanceRealm,
+  breakthroughChance,
+  cultivate,
+  isCultivationFull,
+  parseRealm,
+} from './rules.js';
 import { sceneClass, tick as encounterTick, pickCandidate } from './encounter.js';
-import { rollDuel } from './dice.js';
 import { advanceTime, deriveTime, TIME_SLOTS, SEASONS } from './time.js';
 import { retrieve } from '../memory/retrieve.js';
 import { composeArbiter } from '../narrator/prompt.js';
@@ -47,6 +52,12 @@ export function resolveIntent(action, state, rng) {
   }
 
   if (kind === 'breakthrough') {
+    // 修为未满 100 不具备突破条件（卡内规则：小境界圆满方可尝试）。
+    // 引擎兜底：即使界面漏了拦截，也不掷骰、不耗时间。
+    if (!isCultivationFull(state)) {
+      hints.push('突破条件不足：修为未满 100。本次不进行突破判定，也不推进时间。');
+      return { hints, effects, days: 0, preEffects: false, duel: null };
+    }
     const { major } = parseRealm(state.主角.境界);
     const p = breakthroughChance({ 道心: state.主角.道心, rootText: state.主角.灵根, targetMajor: major });
     const win = rng() < p;
@@ -97,7 +108,7 @@ export function resolveIntent(action, state, rng) {
 export async function runTurn(input) {
   const {
     action, state, index, llm, rng,
-    recent = [], onDelta, onPhase, fallbackNarratives = [],
+    recent = [], recap = '', onDelta, onPhase, fallbackNarratives = [],
     chat = null,
   } = input;
 
@@ -153,7 +164,7 @@ export async function runTurn(input) {
   const plan = buildPromptPlan({
     mode: chat?.mode === 'preset' && chat.preset ? 'preset' : 'default',
     preset: chat?.preset,
-    engine: { action: text || '（静观其变）', index, state, retrieved, recent, hints },
+    engine: { action: text || '（静观其变）', index, state, retrieved, recent, hints, recap },
     names: { charName: chat?.charName, userName: chat?.userName, style: chat?.style },
     rng,
   });
@@ -254,5 +265,3 @@ function defaultChoices(state) {
     ? ['打听消息', '留神四周的人', '起身离开']
     : ['继续前行', '观察四周', '原地调息'];
 }
-
-export { realmIndex, rollDuel };

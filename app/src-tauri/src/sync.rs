@@ -18,7 +18,9 @@ use sha1::{Digest, Sha1};
 use tauri::AppHandle;
 
 use crate::error::{api_error, AppError, AppResult};
-use crate::paths::{config_dir, read_to_string, sanitize_id, save_dir, saves_dir, write_atomic};
+use crate::paths::{
+    config_dir, ensure_dir, read_to_string, sanitize_id, save_dir, saves_dir, write_atomic,
+};
 use crate::secrets::{redact_for_transfer, SecretsState};
 
 const API: &str = "https://api.github.com";
@@ -187,6 +189,43 @@ async fn list_dir(token: &str, cfg: &SyncConfig, path: &str) -> AppResult<Vec<Re
     Ok(out)
 }
 
+/// 按 blob sha 取文件内容（Git Blobs API，支持到 100MB）。
+///
+/// 为什么需要：GitHub Contents API 对 >1MB 的文件**不返回内联 content**
+/// （`encoding: "none"`）。原先对缺失 content 直接 `unwrap_or("")`，
+/// base64 解码空串会"成功"得到空文件 —— 长局的 chat.jsonl 一拉就变成空的。
+async fn get_blob(token: &str, cfg: &SyncConfig, sha: &str) -> AppResult<Vec<u8>> {
+    use base64::Engine;
+    if sha.trim().is_empty() {
+        return Err(AppError::Data(
+            "远端文件没有内联内容，也没有 sha，无法按 blob 读取".into(),
+        ));
+    }
+    let url = format!(
+        "{}/repos/{}/git/blobs/{}",
+        API,
+        cfg.repo.trim(),
+        urlencoding::encode(sha)
+    );
+    let (status, value) = get_json(token, &url).await?;
+    if !(200..300).contains(&status) {
+        return Err(api_error(status, &value.to_string()));
+    }
+    let encoding = value
+        .get("encoding")
+        .and_then(|v| v.as_str())
+        .unwrap_or("base64");
+    let content = value.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    if encoding == "base64" {
+        let cleaned = content.replace(['\n', '\r'], "");
+        base64::engine::general_purpose::STANDARD
+            .decode(cleaned)
+            .map_err(|e| AppError::Data(format!("远端 blob 解码失败：{}", e)))
+    } else {
+        Ok(content.as_bytes().to_vec())
+    }
+}
+
 async fn get_file(
     token: &str,
     cfg: &SyncConfig,
@@ -212,6 +251,12 @@ async fn get_file(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let encoding = value.get("encoding").and_then(|v| v.as_str()).unwrap_or("");
+    // 只有 encoding=base64 才有内联内容；其余（大文件的 "none"）走 Blobs API
+    if encoding != "base64" {
+        let bytes = get_blob(token, cfg, &sha).await?;
+        return Ok(Some((bytes, sha)));
+    }
     let content = value
         .get("content")
         .and_then(|v| v.as_str())
@@ -377,33 +422,59 @@ pub async fn sync_remote_saves(
     list_dir(&token, &cfg, &cfg.base_path).await
 }
 
-/// 推送一个存档：只上传有变化的文件；远端更新则拒绝（除非 force）。
-#[tauri::command]
-pub async fn sync_push(
-    app: AppHandle,
-    sync: tauri::State<'_, SyncState>,
-    secrets: tauri::State<'_, SecretsState>,
-    save_id: String,
+/// chat.jsonl 逐行清洗：单行解析失败按原样保留（多半是坏行，读取时也会被跳过）。
+///
+/// 上传与 `save_write` 都会走这一层 —— 用户把 Key 贴进对话被记录后，
+/// 原样推送会把它送上 GitHub。
+fn redact_jsonl(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::with_capacity(bytes.len());
+    for line in text.split('\n') {
+        let t = line.trim_end_matches('\r');
+        if t.trim().is_empty() {
+            continue;
+        }
+        let mut wrote = false;
+        if let Ok(mut v) = serde_json::from_str::<Value>(t) {
+            redact_for_transfer(&mut v);
+            if let Ok(s) = serde_json::to_string(&v) {
+                out.extend_from_slice(s.as_bytes());
+                out.push(b'\n');
+                wrote = true;
+            }
+        }
+        if !wrote {
+            out.extend_from_slice(t.as_bytes());
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+/// 推送一个存档的核心逻辑。**单档推送与批量推送共用这一条路径** ——
+/// 原先 `sync_push_all` 自己重写了一遍上传，既没有 updatedAt 冲突检查也没有远端备份，
+/// "首次换设备"批量推送时会把另一台设备的新进度整批静默覆盖。
+async fn push_one(
+    app: &AppHandle,
+    cfg: &SyncConfig,
+    token: &str,
+    save_id: &str,
     force: bool,
 ) -> AppResult<Value> {
-    let cfg = sync.snapshot();
-    let token = secrets.snapshot().sync_token;
-    require(&token, &cfg.repo)?;
-
-    let id = sanitize_id(&save_id);
-    let dir = save_dir(&app, &id)?;
+    let id = sanitize_id(save_id);
+    let dir = save_dir(app, &id)?;
+    crate::save::heal_save_dir(&dir); // 先收拾换盘残骸再读
     let remote_dir = format!("{}/{}", cfg.base_path.trim_end_matches('/'), id);
-    let remote = list_dir(&token, &cfg, &remote_dir).await?;
+    let remote = list_dir(token, cfg, &remote_dir).await?;
 
     // 未 force 时：远端更新则中止，避免把另一台设备的进度盖掉
     if !force {
-        if let Some((bytes, _)) =
-            get_file(&token, &cfg, &format!("{}/meta.json", remote_dir)).await?
+        if let Some((bytes, _)) = get_file(token, cfg, &format!("{}/meta.json", remote_dir)).await?
         {
             let remote_updated = serde_json::from_slice::<Value>(&bytes)
                 .ok()
                 .and_then(|v| v.get("updatedAt").and_then(|x| x.as_u64()));
-            if let (Some(r), Some(l)) = (remote_updated, local_updated_at(&app, &id)) {
+            if let (Some(r), Some(l)) = (remote_updated, local_updated_at(app, &id)) {
                 if r > l {
                     return Err(AppError::Other(format!(
                         "远端版本更新（远端 {} / 本机 {}）。请先「拉取」，或改用强制推送。",
@@ -431,7 +502,7 @@ pub async fn sync_push(
                 continue; // 内容一致，不会覆盖掉任何东西
             }
             if let Some((bytes, _)) =
-                get_file(&token, &cfg, &format!("{}/{}", remote_dir, name)).await?
+                get_file(token, cfg, &format!("{}/{}", remote_dir, name)).await?
             {
                 let bdir = remote_backup.get_or_insert_with(|| {
                     dir.join(format!(
@@ -439,7 +510,7 @@ pub async fn sync_push(
                         chrono::Local::now().format("%Y%m%d-%H%M%S")
                     ))
                 });
-                crate::paths::ensure_dir(bdir)?;
+                ensure_dir(bdir)?;
                 write_atomic(&bdir.join(name), &bytes)?;
             }
         }
@@ -452,8 +523,11 @@ pub async fn sync_push(
             continue;
         }
         let mut bytes = std::fs::read(&path)?;
-        // 兜底：meta/state 是 JSON，先过一遍敏感字段清洗
-        if name.ends_with(".json") {
+        // 兜底：JSON 先过一遍敏感字段清洗；叙事流逐行清洗。
+        // 清洗结果同时参与 sha 比对与上传，避免"本地脏 → 每次都重传"的空转。
+        if name == "chat.jsonl" {
+            bytes = redact_jsonl(&bytes);
+        } else if name.ends_with(".json") {
             if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
                 redact_for_transfer(&mut value);
                 bytes = serde_json::to_vec_pretty(&value)?;
@@ -465,8 +539,8 @@ pub async fn sync_push(
             continue; // 内容一致，跳过
         }
         put_file(
-            &token,
-            &cfg,
+            token,
+            cfg,
             &format!("{}/{}", remote_dir, name),
             &bytes,
             existing.map(|e| e.sha.as_str()),
@@ -484,6 +558,21 @@ pub async fn sync_push(
     }))
 }
 
+/// 推送一个存档：只上传有变化的文件；远端更新则拒绝（除非 force）。
+#[tauri::command]
+pub async fn sync_push(
+    app: AppHandle,
+    sync: tauri::State<'_, SyncState>,
+    secrets: tauri::State<'_, SecretsState>,
+    save_id: String,
+    force: bool,
+) -> AppResult<Value> {
+    let cfg = sync.snapshot();
+    let token = secrets.snapshot().sync_token;
+    require(&token, &cfg.repo)?;
+    push_one(&app, &cfg, &token, &save_id, force).await
+}
+
 /// 拉取一个存档：远端更新才覆盖；覆盖前把本地副本另存为 `.conflict-<时间戳>`。
 #[tauri::command]
 pub async fn sync_pull(
@@ -499,6 +588,7 @@ pub async fn sync_pull(
 
     let id = sanitize_id(&save_id);
     let dir = save_dir(&app, &id)?;
+    crate::save::heal_save_dir(&dir); // 先收拾换盘残骸再拉
     let remote_dir = format!("{}/{}", cfg.base_path.trim_end_matches('/'), id);
 
     let remote_meta = get_file(&token, &cfg, &format!("{}/meta.json", remote_dir)).await?;
@@ -524,8 +614,6 @@ pub async fn sync_pull(
 
     // 先备份本地，再覆盖：多端同步最怕的就是静默丢档
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let mut written = Vec::new();
-    let mut backup_dir: Option<PathBuf> = None;
 
     // 先把远端四件套全部取到内存，全部成功后才落盘。
     // 原先边取边写：写到一半网络失败，本地 meta.json 已是远端新值、chat.jsonl 还是旧的，
@@ -539,33 +627,51 @@ pub async fn sync_pull(
         fetched.push((name.to_string(), bytes));
     }
 
-    for (name, bytes) in &fetched {
-        let name = name.as_str();
-        let target = dir.join(name);
-        if target.exists() && backup_dir.is_none() {
-            let bdir = dir.join(format!("conflict-{}", stamp));
-            crate::paths::ensure_dir(&bdir)?;
-            for other in SAVE_FILES {
-                let src = dir.join(other);
-                if src.exists() {
-                    std::fs::copy(&src, bdir.join(other))?;
-                }
-            }
-            backup_dir = Some(bdir);
+    // 落盘用"临时目录 → 整体换盘"（与 save.rs 同机制）：
+    // 拉取中途崩溃不会再留下"meta 新、chat 旧"的混合态。
+    let tmp = crate::save::stage_files(&dir, &fetched)?;
+    // 远端缺哪个文件就保留本地那一份（旧版行为兼容：拉取不该删掉远端没有的附属数据）
+    for name in SAVE_FILES {
+        if fetched.iter().any(|(n, _)| n == name) {
+            continue;
         }
-        write_atomic(&target, bytes)?;
-        written.push(name.to_string());
+        let src = dir.join(name);
+        if src.exists() {
+            std::fs::copy(&src, tmp.join(name))?;
+        }
     }
+    let mut backup_name: Option<String> = None;
+    // 覆盖前的本机副本写进**临时目录**里：commit 换盘时会把它带进新档，
+    // 若留在旧目录则会被换盘后的清理一并删掉。
+    let has_local = SAVE_FILES.iter().any(|n| dir.join(n).exists());
+    if has_local {
+        let bname = format!("conflict-{stamp}");
+        let bdir = tmp.join(&bname);
+        ensure_dir(&bdir)?;
+        for other in SAVE_FILES {
+            let src = dir.join(other);
+            if src.exists() {
+                std::fs::copy(&src, bdir.join(other))?;
+            }
+        }
+        backup_name = Some(bname);
+    }
+    crate::save::commit_stage(&dir)?;
 
+    let written: Vec<String> = fetched.into_iter().map(|(name, _)| name).collect();
     Ok(json!({
         "saveId": id,
         "written": written,
-        "backup": backup_dir.map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+        "backup": backup_name,
         "remoteUpdatedAt": remote_updated,
     }))
 }
 
 /// 一次把本机所有存档推到远端（首次换设备时最常用）。
+///
+/// **每一档都走 `push_one`**：与单档推送共享同一个冲突检查（远端更新则跳过该档）
+/// 与同一套敏感清洗。原先这里自己重写了一遍上传逻辑，既不看 `updatedAt`、
+/// 也不做任何提示，批量推送会把另一台设备的新进度整批静默覆盖。
 #[tauri::command]
 pub async fn sync_push_all(
     app: AppHandle,
@@ -573,77 +679,26 @@ pub async fn sync_push_all(
     secrets: tauri::State<'_, SecretsState>,
 ) -> AppResult<Value> {
     let ids = local_save_ids(&app)?;
-    let mut report = Vec::new();
-    // 配置与令牌在整批里不变，提到循环外（原先每轮都取一次快照）
+    // 配置与令牌在整批里不变，提到循环外
     let cfg = sync.snapshot();
     let token = secrets.snapshot().sync_token;
+    require(&token, &cfg.repo)?;
+
+    let mut report = Vec::new();
     for id in ids {
-        // 逐个走同步逻辑，单个失败不影响其余。
-        // 原先这里的 `?` 会让任意一档读失败直接终止整批（注释说的和做的不一样）。
-        if let Err(e) = require(&token, &cfg.repo) {
-            report.push(json!({ "id": id, "uploaded": [], "error": e.to_string() }));
-            continue;
+        // 逐个走同步逻辑，单个失败不影响其余（错误如实记入该条）
+        match push_one(&app, &cfg, &token, &id, false).await {
+            Ok(v) => report.push(json!({
+                "id": id,
+                "uploaded": v.get("uploaded").cloned().unwrap_or_else(|| json!([])),
+                "error": Value::Null,
+            })),
+            Err(e) => report.push(json!({
+                "id": id,
+                "uploaded": [],
+                "error": e.to_string(),
+            })),
         }
-        let dir = match save_dir(&app, &id) {
-            Ok(d) => d,
-            Err(e) => {
-                report.push(json!({ "id": id, "uploaded": [], "error": e.to_string() }));
-                continue;
-            }
-        };
-        let remote_dir = format!("{}/{}", cfg.base_path.trim_end_matches('/'), id);
-        let remote = list_dir(&token, &cfg, &remote_dir)
-            .await
-            .unwrap_or_default();
-        let mut uploaded = Vec::new();
-        let mut failed: Option<String> = None;
-        for name in SAVE_FILES {
-            let path = dir.join(name);
-            if !path.exists() {
-                continue;
-            }
-            let mut bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(e) => {
-                    failed = Some(format!("读取 {name} 失败：{e}"));
-                    break;
-                }
-            };
-            if name.ends_with(".json") {
-                if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
-                    redact_for_transfer(&mut value);
-                    match serde_json::to_vec_pretty(&value) {
-                        Ok(b) => bytes = b,
-                        Err(e) => {
-                            failed = Some(format!("序列化 {name} 失败：{e}"));
-                            break;
-                        }
-                    }
-                }
-            }
-            let local_sha = git_blob_sha(&bytes);
-            let existing = remote.iter().find(|e| e.name == name && !e.is_dir);
-            if existing.map(|e| e.sha == local_sha).unwrap_or(false) {
-                continue;
-            }
-            match put_file(
-                &token,
-                &cfg,
-                &format!("{}/{}", remote_dir, name),
-                &bytes,
-                existing.map(|e| e.sha.as_str()),
-                &format!("sync: {} · {}", id, name),
-            )
-            .await
-            {
-                Ok(()) => uploaded.push(name.to_string()),
-                Err(e) => {
-                    failed = Some(e.to_string());
-                    break;
-                }
-            }
-        }
-        report.push(json!({ "id": id, "uploaded": uploaded, "error": failed }));
     }
     Ok(json!({ "saves": report }))
 }

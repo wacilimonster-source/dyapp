@@ -5,7 +5,9 @@
 window.DY = (function () {
   'use strict';
 
-  /* ---------- 规则常量（附录 B.6） ---------- */
+  /* ---------- 界面常量 ----------
+   * 规则数值（境界 DC、灵根概率、道心/模糊语/危机档）一律在 engine/rules.js，
+   * 这里是**唯一保留的界面装饰表**（颜色），不要再在本文件复制规则表。 */
   const RES = [
     { key: '生命', color: '#e05555' },
     { key: '精血', color: '#b0453a' },
@@ -13,25 +15,6 @@ window.DY = (function () {
     { key: '修为', color: '#d4af37' },
     { key: '神识', color: '#c58aff' },
     { key: '道心', color: '#6fd49a' },
-  ];
-  const CRISIS = { '无': 0, '低': 1, '中': 2, '高': 3, '致命': 3 };
-  const DAO_STAGE = (v) => (v <= 25 ? '凡心' : v <= 50 ? '初窥门径' : v <= 75 ? '澄澈' : '磐石');
-  const VAGUE = (v) => (v >= 80 ? '充盈' : v >= 30 ? '稳固' : v >= 20 ? '不足' : v >= 10 ? '枯竭' : v >= 1 ? '濒危' : '归零');
-
-  /* 全境界 DC 表（docs/附录B） */
-  const REALM_DC = {
-    炼气期: [1, 10], 筑基期: [25, 34], 金丹期: [49, 58], 元婴期: [73, 82],
-    化神期: [97, 106], 炼虚期: [121, 130], 合体期: [145, 154], 大乘期: [169, 178],
-    渡劫期: [182, 182], 真仙境: [217, 226], 金仙境: [241, 250], 玄仙境: [265, 274],
-    仙帝境: [289, 298], 半步超脱: [666, 666], 超脱境: [999, 999],
-  };
-  const DC_TIERS = [
-    { max: 2, desc: '同层博弈，胜负看战术 · 法宝 · 临场' },
-    { max: 3, desc: '越一小境界，高阶微弱优势' },
-    { max: 6, desc: '越两小境界，压制初显' },
-    { max: 9, desc: '越三小境界，同阶绝对压制' },
-    { max: 15, desc: '越一大境界，触发「精神灵压律」' },
-    { max: Infinity, desc: '越数个大境界，绝对压制律 + 不可逆伤害律' },
   ];
 
   /* ---------- 当前存档状态（GameState 摘要） ---------- */
@@ -141,13 +124,6 @@ window.DY = (function () {
     { name: '莫欺少年穷', 向: '男性向', desc: '三十年河东三十年河西，越是被轻视，越强。' },
     { name: '赘婿战神', 向: '男性向', desc: '人前受尽白眼，暗处已有九重身份。' },
   ];
-  const ROOT_TIERS = [
-    { 品: '天品', 概率: 0.01, 色: '#ff9de2', 修炼: '炼气 +30 / 筑基–化神 +20 / 炼虚–大乘 +15 / 真仙–仙帝 +10' },
-    { 品: '地品', 概率: 0.04, 色: '#ffd479', 修炼: '炼气 +26 / 筑基–化神 +17 / 炼虚–大乘 +13 / 真仙–仙帝 +8' },
-    { 品: '玄品', 概率: 0.15, 色: '#8fd0ff', 修炼: '炼气 +21 / 筑基–化神 +14 / 炼虚–大乘 +10 / 真仙–仙帝 +7' },
-    { 品: '黄品', 概率: 0.35, 色: '#9bd8a6', 修炼: '炼气 +16 / 筑基–化神 +11 / 炼虚–大乘 +8 / 真仙–仙帝 +6' },
-    { 品: '凡品', 概率: 0.45, 色: '#9aa3b5', 修炼: '炼气 +10 / 筑基–化神 +7 / 炼虚–大乘 +5 / 真仙–仙帝 +3' },
-  ];
 
   /* ---------- 图鉴 / Wiki（世界书节选，真实条目标题） ---------- */
   const WORLD = [
@@ -176,5 +152,5 @@ window.DY = (function () {
     opencodego: { baseUrl: 'https://opencode.ai/zen/go/v1', endpointPath: '/chat/completions', requiresApiKey: true, autoHeaders: { 'x-opencode-session': 'uuid' } },
   };
 
-  return { RES, CRISIS, DAO_STAGE, VAGUE, REALM_DC, DC_TIERS, state, turns, LUCK_POOL, ROOT_TIERS, WORLD, PROVIDER_PRESETS };
+  return { RES, state, turns, LUCK_POOL, WORLD, PROVIDER_PRESETS };
 })();

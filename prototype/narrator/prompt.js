@@ -15,6 +15,8 @@ export const LAYER_BUDGET = Object.freeze({
   L1: 1400,
   L2: 1200,
   L3: 260,
+  // L3.5：往昔回顾（窗口之外回合的抽取式摘要，见 memory/recap.js）
+  RECAP: 560,
   L4: 1600,
   L5: 260,
 });
@@ -32,9 +34,9 @@ export const L0_PROTOCOL = [
 /**
  * 组装叙事请求的 messages。
  * @param {{action:string, index?:object, state:object, retrieved?:Array, recent?:Array<{role:string,text:string}>,
- *          hints?:string[], budget?:object}} input
+ *          hints?:string[], recap?:string, budget?:object}} input
  */
-export function composeNarrative({ action, index, state, retrieved = [], recent = [], hints = [], budget = {} }) {
+export function composeNarrative({ action, index, state, retrieved = [], recent = [], hints = [], recap = '', budget = {} }) {
   const B = { ...LAYER_BUDGET, ...budget };
   const messages = [];
   const meta = { layers: [], droppedTurns: 0 };
@@ -71,6 +73,16 @@ export function composeNarrative({ action, index, state, retrieved = [], recent 
   const L3 = `【当前状态】\n${summary}`;
   messages.push({ role: 'system', content: L3 });
   meta.layers.push({ name: 'L3', tokens: estimateTokens(L3) });
+
+  // L3.5 往昔回顾：更早回合的滚动摘要（长局里 L4 放不下的部分）
+  if (recap) {
+    const text = String(recap).slice(0, Math.round(B.RECAP * 1.6));
+    if (text.trim()) {
+      const content = `【往昔回顾 · 更早的剧情摘要】\n${text}`;
+      messages.push({ role: 'system', content });
+      meta.layers.push({ name: 'L3.5', tokens: estimateTokens(content) });
+    }
+  }
 
   // L4 近况：从最近往回塞，超出预算就丢最早的
   const recentKept = [];
@@ -113,7 +125,7 @@ export function composeArbiter({ action, narrative, state, recent = [], retrieve
     '你是《道渊》的状态裁决器。只输出一个 JSON 对象，不要任何解释、不要代码围栏。',
     'JSON 形状：',
     '{"effects":[{"op":"delta|set|add|remove","target":"主角.灵力","value":-12,"reason":"施展御剑术"}],',
-    ' "scene":{"当前时间":"初春·黄昏","当前地点":"青石镇·醉仙楼","危机程度":"低","天气":"细雨"},',
+    ' "scene":{"当前地点":"青石镇·醉仙楼","危机程度":"低","天气":"细雨"},',
     ' "choices":["继续修炼","去坊市看看"]}',
     '',
     'target 用扁平点路径，可用前缀：世界 / 主角 / 道侣.<名> / 灵宠.<名> / 人物.<名> / 机遇.<名> / 绝色榜.<名> / 玉简.<名>。',
@@ -121,7 +133,7 @@ export function composeArbiter({ action, narrative, state, recent = [], retrieve
     '铁律：',
     '1. 只记录**正文里真实发生过**的变化，不要凭空创造；',
     '2. 所有百分比字段的取值范围是 0–100，越界会被引擎截断；',
-    '3. 禁止修改「性格」这类固定设定；',
+    '3. 禁止修改「性格」这类固定设定，也禁止写「境界」「境界DC」「当前时间」（引擎独占，写了会被丢弃）；',
     '4. 若本回合没有任何状态变化，effects 返回空数组；',
     '5. choices 给 2–4 条、每条不超过 20 字的下一步行动建议。',
   ].join('\n');

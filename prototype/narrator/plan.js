@@ -18,7 +18,7 @@
 import { stateSummary } from '../engine/state.js';
 import { constantText } from '../memory/index.js';
 import { estimateTokens } from '../memory/retrieve.js';
-import { composeNarrative, L0_PROTOCOL, LAYER_BUDGET } from './prompt.js';
+import { composeNarrative, LAYER_BUDGET } from './prompt.js';
 import { renderMacros } from '../preset/macros.js';
 
 /** 该 marker 用引擎的什么数据填（docs/06 §3.2）。 */
@@ -61,10 +61,12 @@ export function buildPromptPlan(input) {
     retrieved: engine.retrieved || [],
     recent: engine.recent || [],
     hints: engine.hints || [],
+    recap: engine.recap || '',
   });
   return {
     messages,
-    meta: { ...meta, mode: 'default', layers: [{ name: 'L0', tokens: estimateTokens(L0_PROTOCOL) }, ...meta.layers] },
+    // composeNarrative 已把 L0 放进 meta.layers，这里不能再补一条（会出现两个 L0）
+    meta: { ...meta, mode: 'default' },
     warnings: [],
     sampling: {},
   };
@@ -107,7 +109,8 @@ function buildPresetPlan({ preset, engine, names, rng }) {
         return [{ role: 'system', content }];
       }
       case 'personaDescription': {
-        const content = `【主角状态】\n${stateSummary(state)}`;
+        const recapBlock = engine.recap ? `\n\n【往昔回顾 · 更早的剧情摘要】\n${engine.recap}` : '';
+        const content = `【主角状态】\n${stateSummary(state)}${recapBlock}`;
         layers.push({ name: 'L3 状态摘要', tokens: estimateTokens(content) });
         return [{ role: 'system', content }];
       }

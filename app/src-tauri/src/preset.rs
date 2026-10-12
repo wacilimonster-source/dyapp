@@ -216,12 +216,16 @@ pub fn preset_rename(app: AppHandle, id: String, name: String) -> AppResult<Pres
 pub fn preset_import(app: AppHandle, raw: String, name: Option<String>) -> AppResult<PresetMeta> {
     serde_json::from_str::<serde_json::Value>(&raw)
         .map_err(|e| AppError::Data(format!("预设不是合法 JSON：{e}")))?;
-    let base = sanitize_id(&name.clone().unwrap_or_else(|| guess_name(&raw, "preset")));
-    let mut id = base.clone();
+    let stem = sanitize_id(&name.clone().unwrap_or_else(|| guess_name(&raw, "preset")));
+    let mut id = stem.clone();
     let mut n = 1;
+    // 注意：sanitize_id 只取前 64 字符，所以拼后缀前必须先把主干截短 ——
+    // 否则主干已满 64 位时，`{stem}-2` 截断后与初始 id 完全相同，循环空转到 99
+    // 后报"同名预设过多"，用户永远导不进来（save.rs 修过同款，这里曾漏修）。
     while preset_path(&app, &id)?.exists() {
         n += 1;
-        id = format!("{base}-{n}");
+        let short: String = stem.chars().take(56).collect();
+        id = sanitize_id(&format!("{short}-{n}"));
         if n > 99 {
             return Err(AppError::Other("同名预设过多，请先清理".into()));
         }

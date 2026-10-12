@@ -1,0 +1,26 @@
+feat: 创角/成就/往昔回顾下沉到引擎 + 存档缩略图 + 产物构建工作流（并入另一会话的改动）
+
+这一批来自与本仓库并行推进的另一条工作线（经确认后一并入库发版）。内容：
+
+引擎侧新增三个模块（都只依赖 core/ 与 engine/，可注入 rng 复现、可单测）：
+- engine/create.js：六步创角的选择落成初始 GameState。出身加成、初始灵石、道侣建档、
+  真·气运抽取这些确定性规则原先散在 app.js 的手写代码里，现在收归引擎一份
+- engine/achievements.js：成就全部由引擎从状态判定，解锁记录写在 state.$成就[id]
+- memory/recap.js：长局里窗口外的历史压成"时间·地点 + 正文开头"的抽取式摘要，
+  注入提示词 L3.5 层，零额外模型调用
+
+界面：新增「成就」面板；创角向导改走引擎规则；玉简面板与发信补空数据守卫
+（道侣选「天道自定」时 state.玉简 为空对象，原先解构会崩并连带整块侧栏打不开）；
+存档缩略图（save.rs 的 thumb 字段，旧档缺省为空串）。
+
+安全相关（关键的两处收紧）：
+- secrets.rs：`update()` 不再接受空串——前端留空表示"不改动"，清空必须走显式的
+  clear_llm_key / clear_sync_token，避免误清空已存 Key
+- secrets.rs：redact_for_transfer 增加"包含名"匹配（accessToken / openai_api_key /
+  clientSecret 这类变体），原先只按精确名匹配会漏；save.rs 的叙事流也过这一层
+
+新增 .github/workflows/build-artifacts.yml（手动触发）：Windows msi/nsis + 安卓通用 APK，
+产物从 Actions 页下载；CI 侧不做签名（keystore 不入库）。
+
+验证：30 个文件真 ESM 解析通过；前端 161 项（158 通过 / 3 跳过，均为需凭据的集成测试）
+0 失败；cargo fmt --check 干净；cargo test --lib 26 项全过。

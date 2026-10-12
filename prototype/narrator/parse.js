@@ -4,7 +4,9 @@
  */
 
 const OPS = new Set(['set', 'delta', 'add', 'remove']);
-const SCENE_KEYS = ['当前时间', '当前地点', '危机程度', '天气', '灵气'];
+// 时间由引擎独占（world.天数/时段 派生），模型回传的「当前时间」一律丢弃 ——
+// 协议示例里也不再要求模型产出它。
+const SCENE_KEYS = ['当前地点', '危机程度', '天气', '灵气'];
 const CRISIS = new Set(['无', '低', '中', '高']);
 const MAX_CHOICES = 4;
 const MAX_CHOICE_LEN = 40;
@@ -28,7 +30,6 @@ export function sanitizeNarrative(text) {
   const cut = stateBlockIndex(out);
   if (cut >= 0) out = out.slice(0, cut);
   out = out.replace(new RegExp("<\\/?(?:data_block|UpdateVariable|Analysis|StatusPlaceHolderImpl)\\b[^>]*>", "gi"), "");
-  out = out.replace(new RegExp("<StatusPlaceHolderImpl\\s*\\/>", "gi"), "");
   // 注意：替换串必须是真的换行字符，不能写成「反斜杠 + n」两个字面字符
   // ——那样 trim() 收不掉尾部空行。这里用字符码构造，彻底避开转义问题。
   const LF = String.fromCharCode(10);

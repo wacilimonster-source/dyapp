@@ -388,3 +388,39 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
 /* 滑动关闭抽屉时的拖拽反馈 */
 .sidebar.dragging { transition: none; }
 
+/* ================= 交互优化层（v0.3）：提示 / 成就 / 时间线 / 缩略图 ================= */
+
+/* 轻量提示条（成就解锁、条件不足等） */
+#dy-toast { position: fixed; left: 50%; top: calc(14px + var(--sat)); transform: translate(-50%, -8px);
+  z-index: 9998; max-width: min(560px, 90vw); padding: 9px 14px; border-radius: 999px;
+  background: rgba(30, 24, 12, 0.94); border: 1px solid rgba(212, 175, 55, 0.5); color: var(--gold);
+  font-size: 0.82rem; text-align: center; opacity: 0; pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease; }
+#dy-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* 叙事流「载入更早」 */
+.load-earlier { display: block; width: 100%; margin: 0 0 14px; padding: 9px; border-radius: 10px;
+  border: 1px dashed rgba(212, 175, 55, 0.4); background: transparent; color: var(--dim);
+  font-size: 0.78rem; cursor: pointer; }
+
+/* 存档缩略图（前端生成的 SVG data URI） */
+.sv-thumb { width: 40px; height: 40px; border-radius: 9px; flex: none; margin-right: 10px;
+  border: 1px solid rgba(212, 175, 55, 0.25); }
+
+/* 时间线回看 */
+.tl-list { max-height: 46vh; overflow: auto; text-align: left; margin: 10px 0; }
+.tl-row { display: flex; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+.tl-i { color: var(--faint); font-size: 0.72rem; flex: none; padding-top: 2px; min-width: 34px; }
+.tl-w { color: var(--purple); font-size: 0.74rem; }
+.tl-t { color: var(--dim); font-size: 0.8rem; margin-top: 3px; }
+
+/* 成就 */
+.ach { display: flex; gap: 10px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--line); opacity: .55; }
+.ach.on { opacity: 1; }
+.ach .ic { font-size: 1.2rem; flex: none; }
+.ach .nm { color: var(--gold); font-size: 0.88rem; }
+.ach .d { color: var(--dim); font-size: 0.74rem; margin-top: 2px; }
+
+/* 突破按钮不可用态（修为未满 100） */
+#actions .act.dim { opacity: .45; }
+

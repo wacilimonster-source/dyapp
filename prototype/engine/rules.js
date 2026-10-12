@@ -198,9 +198,8 @@ export function breakthroughChance({ 道心, rootText, 丹药加成 = 0, targetM
 export function advanceRealm(label) {
   const { major, minor } = parseRealm(label);
   const idx = realmIndex(major);
-  if (idx < 0 || idx >= REALM_ORDER.length - 1) {
-    return REALM_ORDER[idx] === major ? null : null; // 已是最后一境
-  }
+  // realmIndex 对未知境界也返回 0，故只需守上界
+  if (idx >= REALM_ORDER.length - 1) return null; // 已是最后一境
   if (SINGLE_MINOR.has(major) || minor >= 9) {
     const nextMajor = REALM_ORDER[idx + 1];
     return nextMajor ? realmLabel(nextMajor, 1) : null;

@@ -40,6 +40,7 @@ export function emptyState() {
     },
     道侣: {}, 灵宠: {}, 人物: {}, 机遇: {}, 绝色榜: {}, 玉简: {},
     $器灵台词: [], $frozen: {}, $log: [],
+    $成就: {}, $统计: { 回合数: 0, 突破成功: 0, 突破失败: 0 }, $往昔: '',
   };
 }
 
@@ -58,13 +59,18 @@ export function normalize(state) {
   if (!isPlainObject(state)) return emptyState();
 
   // 顶层集合必须存在
-  for (const k of ['道侣', '灵宠', '人物', '机遇', '绝色榜', '玉简', '气运']) {
-    if (k === '气运') continue;
+  for (const k of ['道侣', '灵宠', '人物', '机遇', '绝色榜', '玉简']) {
     if (!isPlainObject(state[k])) state[k] = {};
   }
   if (!Array.isArray(state.$器灵台词)) state.$器灵台词 = [];
   if (!isPlainObject(state.$frozen)) state.$frozen = {};
   if (!Array.isArray(state.$log)) state.$log = [];
+  if (!isPlainObject(state.$成就)) state.$成就 = {};
+  if (!isPlainObject(state.$统计)) state.$统计 = {};
+  if (typeof state.$往昔 !== 'string') state.$往昔 = '';
+  for (const k of ['回合数', '突破成功', '突破失败']) {
+    state.$统计[k] = Math.max(0, Math.floor(Number(state.$统计[k]) || 0));
+  }
 
   // 世界
   const W = (state.世界 = isPlainObject(state.世界) ? state.世界 : {});
