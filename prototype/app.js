@@ -768,13 +768,11 @@ import { createStore, newSaveId } from './store/index.js';
   /** 请求头 ↔ 文本框（每行「名: 值」）。 */
   function headersToText(map) {
     const o = map && typeof map === 'object' ? map : {};
-    return Object.entries(o).map(([k, v]) => `${k}: ${v}`).join('
-');
+    return Object.entries(o).map(([k, v]) => `${k}: ${v}`).join('\n');
   }
   function textToHeaders(text) {
     const out = {};
-    for (const line of String(text || '').split(/?
-/)) {
+    for (const line of String(text || '').split(/\r?\n/)) {
       const t = line.trim();
       if (!t || t.startsWith('#')) continue;
       const i = t.indexOf(':');
@@ -857,8 +855,7 @@ import { createStore, newSaveId } from './store/index.js';
         const ta = $('#cfg-headers');
         if (ta) {
           const filled = Object.entries(auto).map(([k, v]) => `${k}: ${v === 'uuid' ? newSessionId() : v}`);
-          if (filled.length) ta.value = filled.join('
-');
+          if (filled.length) ta.value = filled.join('\n');
         }
       }));
 
@@ -1366,6 +1363,9 @@ import { createStore, newSaveId } from './store/index.js';
 
   // 存档列表
   refreshSaves().then(() => { if (curPanel === '存档') renderSidebar(); });
+
+  // 启动自检：跑到这里说明模块求值没有抛错
+  if (typeof window.__dyMarkBootOk === 'function') window.__dyMarkBootOk();
 
   // 壳能力探测：在 Tauri 里读本地模型配置与同步配置；浏览器里保持降级
   refreshLlm();

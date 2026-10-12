@@ -14,12 +14,9 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 界面与内核 JS 语法检查
-        run: |
-          while IFS= read -r f; do
-            echo "check $f"
-            node --check "$f"
-          done < <(find prototype -name '*.js' -not -path '*/node_modules/*' | sort)
+      # 用真正的 ESM 解析：node --check 对 .js 里的 ES 模块会漏报（踩过）
+      - name: 界面与内核语法检查（真实 ESM 解析）
+        run: node --experimental-vm-modules tools/check-syntax.mjs
 
       - name: 版本号单一真源校验（VERSION 与 update.js 必须一致）
         run: |
