@@ -59,10 +59,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
+      # 不用 android-actions/setup-android：ubuntu-latest 自带 Android SDK + cmdline-tools，
+      # 而那个 action 在 v3 实测会失败（见 release.yml 同处注释）。
       - name: 安装 Android NDK
         run: |
+          command -v sdkmanager >/dev/null || { echo "::error::镜像里没有 sdkmanager"; exit 1; }
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;27.0.12077973" > /dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"

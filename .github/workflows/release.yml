@@ -83,13 +83,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
+      # 不装 android-actions/setup-android：ubuntu-latest 镜像**自带** Android SDK 与 cmdline-tools，
+      # sdkmanager 已在 PATH 上。实测那个 action 在 v3 会失败（job 报 failure、后续步骤全 skipped），
+      # 而它装的东西镜像里本来就有——少一个外部依赖，少一处坏点。
       - name: 安装 Android NDK
         run: |
+          command -v sdkmanager >/dev/null || { echo "::error::镜像里没有 sdkmanager（Android SDK 未预装？）"; exit 1; }
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;27.0.12077973" > /dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: 安装 tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
