@@ -18,11 +18,19 @@ node_modules/
 dist/
 build/
 out/
+target/
 *.apk
 *.aab
 *.idsig
-src-tauri/target/
-src-tauri/gen/
+# 注意：app/src-tauri/gen/android 是**要入库**的安卓工程，只忽略 Tauri 生成的 schema 缓存
+app/src-tauri/gen/schemas/
+app/src-tauri/.tauri/
+
+# 签名材料绝不入库
+*.keystore
+*.jks
+keystore.properties
+local.properties
 
 # 本地打包 / 预览产物
 *.zip

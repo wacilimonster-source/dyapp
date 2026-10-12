@@ -22,7 +22,9 @@
 | [docs/00-道渊独立版-产品设计方案.md](docs/00-道渊独立版-产品设计方案.md) | **主方案**：定位、玩法系统、AI 叙事内核与调用优化、可视化与界面、技术架构、里程碑、合规风险 |
 | [docs/01-道渊独立版-安卓原型设计.md](docs/01-道渊独立版-安卓原型设计.md) | **安卓原型设计**：手机/平板双版式、逐屏线框、交互与演出、安卓落地（断点/安全区/返回键/包体）、验收清单 |
 | [docs/02-发布与更新机制.md](docs/02-发布与更新机制.md) | **版本与发版**：版本号单一真源、tag→Release 流程、客户端检查更新的协议与安卓 APK 安装路径 |
-| [prototype/](prototype/) | **可交互 HTML 原型**：手机与平板响应式，暗金+紫主题，含创角/主界面/11 面板/判定演出 |
+| [docs/03-应用架构与实现.md](docs/03-应用架构与实现.md) | **应用实现**：Tauri 2 一套代码出 Windows + 安卓手机/平板、大模型客户端、密钥本地化、GitHub 进度同步、构建命令 |
+| [app/](app/) | **Tauri 2 应用**：Rust 壳（LLM 客户端 / 本地密钥 / GitHub 同步）+ 安卓与 Windows 构建配置 |
+| [prototype/](prototype/) | **Web 界面**：手机与平板响应式，暗金+紫主题；同时就是 App 的前端 |
 | [docs/附录A·道渊卡片资产盘点.md](docs/附录A·道渊卡片资产盘点.md) | 对卡的完整学习成果：世界书 319 条分类、17 条正则、4 个脚本、变量模型、开局流程、每回合协议 |
 | [docs/附录B·状态数据模型.md](docs/附录B·状态数据模型.md) | Zod Schema → TypeScript 类型、效果（effect）协议、规则常量表、存档结构 |
 | [`_卡资产提取/`](_卡资产提取/) | 从卡里抽出的原始资产（研究用，已随仓库公开） |
@@ -33,12 +35,29 @@
 |---|---|
 | `index.html` | 入口，可直接用安卓浏览器打开或包进 WebView |
 | `styles.css` | 版式由 `#app[data-layout="phone\|tablet"]` 驱动；含安全区与 44dp 触控尺寸 |
-| `data.js` | 假数据，结构对齐 `GameState`，名称与数值取自卡内真实设定 |
-| `app.js` | 导航、创角向导、HUD、叙事流、11 个面板、判定演出 |
+| `data.js` | 原型假数据，结构对齐 `GameState`，名称与数值取自卡内真实设定 |
+| `app.js` | 导航、创角向导、HUD、叙事流、13 个面板、判定演出 |
 | `update.js` | 检查更新模块：读 GitHub Releases、语义化版本比较、离线降级 |
+| `bridge.js` | **前端 ↔ Rust 壳的唯一通道**；浏览器里统一降级为"不可用" |
 
 运行：在 `prototype/` 目录起静态服务（如 `python -m http.server 8777`），浏览器访问 `http://127.0.0.1:8777/`。
 真机按屏幕宽度自动判定版式；桌面预览用右下角「手机 / 平板」开关切换。
+
+> 浏览器里只能预览界面：**模型配置**与**进度同步**两页需要客户端壳（密钥与网络都在 Rust 侧）。
+> 打包成 App 后这两页才真正可用，见 [`docs/03`](docs/03-应用架构与实现.md)。
+
+### `app/` 说明（Tauri 2 壳）
+
+| 路径 | 内容 |
+|---|---|
+| `src-tauri/src/llm.rs` | 最小 OpenAI 兼容客户端：SSE 流式 + JSON 模式 + `/models` |
+| `src-tauri/src/secrets.rs` | 本地密钥（模型 Key / 同步令牌），**不进存档、不进同步** |
+| `src-tauri/src/sync.rs` | GitHub Contents API 进度同步（推送/拉取/冲突提示/覆盖前备份） |
+| `src-tauri/src/paths.rs` | 配置与数据目录、原子写 |
+| `src-tauri/gen/android/` | `cargo tauri android init` 生成的安卓工程 |
+| `src-tauri/icons/` | 应用图标（PIL 生成，含 Windows `.ico`） |
+
+构建命令与前置条件见 [`docs/03`](docs/03-应用架构与实现.md) 第 7 节。**Windows 侧必须是 MSVC 工具链**（MinGW 缺 `dlltool`）。
 
 ---
 

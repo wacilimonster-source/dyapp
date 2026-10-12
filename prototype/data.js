@@ -167,5 +167,12 @@ window.DY = (function () {
     { t: '玄天界灵石体系', c: '规则', k: ['灵石', '货币'], s: '下品 / 中品 / 上品 / 极品灵石的换算与购买力。' },
   ];
 
-  return { RES, CRISIS, DAO_STAGE, VAGUE, REALM_DC, DC_TIERS, state, turns, LUCK_POOL, ROOT_TIERS, WORLD };
+  /* ---------- 接口预设（与 Rust 侧 ProviderConfig::preset 对应） ---------- */
+  const PROVIDER_PRESETS = {
+    openai: { baseUrl: 'https://api.openai.com/v1', endpointPath: '/chat/completions', requiresApiKey: true },
+    ollama: { baseUrl: 'http://127.0.0.1:11434/v1', endpointPath: '/chat/completions', requiresApiKey: false },
+    custom: { baseUrl: '', endpointPath: '/chat/completions', requiresApiKey: true },
+  };
+
+  return { RES, CRISIS, DAO_STAGE, VAGUE, REALM_DC, DC_TIERS, state, turns, LUCK_POOL, ROOT_TIERS, WORLD, PROVIDER_PRESETS };
 })();

@@ -20,7 +20,8 @@
     { id: '主角', icon: '☯' }, { id: '道侣', icon: '💞' }, { id: '人物', icon: '👤' },
     { id: '灵宠', icon: '🐾' }, { id: '机遇', icon: '📜' }, { id: '绝色榜', icon: '🏮' },
     { id: '玉简', icon: '📱' }, { id: '背包', icon: '🎒' }, { id: '地图', icon: '🗺' },
-    { id: '图鉴', icon: '📖' }, { id: '设置', icon: '⚙' },
+    { id: '图鉴', icon: '📖' }, { id: '模型', icon: '🔌' }, { id: '同步', icon: '☁' },
+    { id: '设置', icon: '⚙' },
   ];
   let curPanel = '主角';
   let forced = null;       // null | 'phone' | 'tablet'
@@ -340,17 +341,23 @@
     choices: ['拱手行礼，报上名号', '不动声色，先退半步', '反问她是谁'],
   };
 
-  function freeText(text) {
+  async function freeText(text) {
     turns.push({ role: 'user', text });
     appendTurn(turns[turns.length - 1]);
     const enc = tickCooldown();
+
+    // 配好了大模型就走真接口；否则（或调用失败）回退到离线示例文本
+    if (LLM.ready) {
+      const ok = await narrateWithLlm(text);
+      renderHUD();
+      if (ok) return;
+    }
+
     const r = enc ? ENCOUNTER : pick(REPLIES);
-    setTimeout(() => {
-      const t = { role: 'assistant', text: r.text, effects: r.fx, choices: r.choices, scene: { 当前时间: state.世界.当前时间, 当前地点: state.世界.当前地点, 危机程度: state.世界.危机程度 } };
-      advanceTime(0);
-      applyEffects(r.fx || []);
-      turns.push(t); typeAssistant(t); renderHUD();
-    }, 380);
+    const t = { role: 'assistant', text: r.text, effects: r.fx, choices: r.choices, scene: { 当前时间: state.世界.当前时间, 当前地点: state.世界.当前地点, 危机程度: state.世界.危机程度 } };
+    advanceTime(0);
+    applyEffects(r.fx || []);
+    turns.push(t); typeAssistant(t); renderHUD();
   }
   function cultivate() {
     const P = state.主角;
@@ -479,6 +486,130 @@
     $('#upd-chip').addEventListener('click', () => { showScreen('s-game'); openPanel('设置'); });
   }
 
+  /* ================= 大模型接入（能力由壳提供，浏览器内降级） ================= */
+  const LLM = { shell: false, ready: false, settings: null, secrets: null, error: '' };
+
+  async function refreshLlm() {
+    LLM.shell = window.DYApp.available();
+    if (!LLM.shell) { LLM.ready = false; return; }
+    try {
+      const r = await window.DYApp.llm.get();
+      LLM.settings = r.settings;
+      LLM.secrets = r.secrets;
+      const s = r.settings || {};
+      LLM.ready = !!(r.secrets && r.secrets.llmKeySet)
+        && !!(s.narrator && s.narrator.model)
+        && !!(s.provider && s.provider.baseUrl);
+      LLM.error = '';
+    } catch (e) {
+      LLM.error = String((e && e.message) || e);
+      LLM.ready = false;
+    }
+  }
+
+  /** 本回合的状态摘要（对应主方案 L3 层：只给摘要，不给全量 JSON）。 */
+  function stateSummary() {
+    const P = state.主角, W = state.世界;
+    const who = Object.entries(state.人物)
+      .map(([k, v]) => `${k}（好感${v.好感}·${v.关系阶段}）`).join('；') || '无';
+    return [
+      `${P.姓名} · ${P.境界}（DC:${P.境界DC}） · ${P.宗门} · ${P.所在界}`,
+      `时间：${W.当前时间}｜地点：${W.当前地点}｜天气：${W.天气}｜危机：${W.危机程度}`,
+      `生命${P.生命} 精血${P.精血} 灵力${P.灵力} 修为${P.修为} 神识${P.神识} 道心${P.道心}（${D.DAO_STAGE(P.道心)}）`,
+      `灵根：${P.灵根}｜状态：${P.状态}｜气运：${Object.keys(P.气运).join('、') || '无'}`,
+      `在场人物：${who}`,
+    ].join('\n');
+  }
+
+  const SYS_PROMPT = [
+    '你是《道渊》的叙事引擎。只输出剧情正文。',
+    '禁止输出 JSON、HTML、状态栏、变量块或任何系统说明。',
+    '境界与数值由本地引擎裁定，你不计算、不修改数值；不替玩家做决定；不描写玩家未选择的行为。',
+    '文风：玄天界修仙，第三人称限知视角，中文，冷静克制，重细节与留白。每段 150–400 字。',
+  ].join('\n');
+
+  function buildMessages(userText) {
+    const recent = turns.slice(-6).map((t) => ({
+      role: t.role === 'user' ? 'user' : 'assistant',
+      content: t.text,
+    }));
+    return [
+      { role: 'system', content: SYS_PROMPT },
+      { role: 'system', content: '【当前状态】\n' + stateSummary() },
+      ...recent,
+      { role: 'user', content: userText },
+    ];
+  }
+
+  function newAssistantBubble() {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg assistant';
+    wrap.innerHTML = '<div class="who">道渊</div><div class="bubble typing"></div>';
+    $('#stream').appendChild(wrap);
+    return { wrap, bubble: $('.bubble', wrap) };
+  }
+
+  /** 真·调用大模型；返回是否成功。失败由调用方回退到离线示例文本。 */
+  async function narrateWithLlm(userText) {
+    const { bubble } = newAssistantBubble();
+    const requestId = 'req-' + Date.now() + '-' + rnd(9999);
+    let full = '', err = null;
+    try {
+      await window.DYApp.llm.stream(
+        { requestId, messages: buildMessages(userText), stream: true, jsonMode: false },
+        (ev) => {
+          if (ev.type === 'delta') { full += ev.data.text; bubble.textContent = full; scrollStream(); }
+          else if (ev.type === 'reasoning') { /* 思维链不展示，按卡设定"不输出思考" */ }
+          else if (ev.type === 'error') { err = new Error(ev.data && ev.data.message || '流式出错'); }
+        });
+    } catch (e) { err = e; }
+    bubble.classList.remove('typing');
+    if (err) {
+      bubble.textContent = '调用模型失败：' + (err.message || err);
+      turns.push({ role: 'system', text: bubble.textContent });
+      return false;
+    }
+    if (!full.trim()) { bubble.textContent = '（模型没有返回内容）'; return false; }
+    turns.push({ role: 'assistant', text: full, choices: ['继续', '观察四周', '打坐调息'] });
+    return true;
+  }
+
+  /* ================= 多端进度同步（能力由壳提供） ================= */
+  const SYNC = { shell: false, config: null, secrets: null, local: [], remote: [], log: '', error: '' };
+
+  async function refreshSync() {
+    SYNC.shell = window.DYApp.available();
+    if (!SYNC.shell) return;
+    try {
+      const r = await window.DYApp.sync.getConfig();
+      SYNC.config = r.config;
+      SYNC.secrets = r.secrets;
+      SYNC.error = '';
+    } catch (e) {
+      SYNC.error = String((e && e.message) || e);
+    }
+  }
+
+  function shellNote() {
+    return `<div class="card" style="margin-bottom:12px;border-color:rgba(255,176,102,.4)">
+      <b style="color:var(--warn)">当前是浏览器预览</b>
+      <div style="color:var(--dim);font-size:.8rem;margin-top:6px">这一页的能力由桌面端 / 安卓客户端提供（在 Rust 侧实现）。浏览器里只能看界面，无法真正读写本地密钥、存档与 GitHub。</div></div>`;
+  }
+
+  /** 拉本机/远端存档列表。远端只有"仓库 + 令牌都配好"时才查，避免首次打开就报错。 */
+  async function loadSyncLists() {
+    if (!SYNC.shell) return;
+    try { SYNC.local = await window.DYApp.sync.localSaves(); } catch (e) { SYNC.local = []; }
+    const c = SYNC.config || {}, s = SYNC.secrets || {};
+    if (c.repo && s.syncTokenSet) {
+      try { SYNC.remote = await window.DYApp.sync.remoteSaves(); SYNC.error = ''; }
+      catch (e) { SYNC.remote = []; SYNC.error = String((e && e.message) || e); }
+    } else {
+      SYNC.remote = [];
+    }
+    renderSidebar();
+  }
+
   /* ================= 侧栏面板 ================= */
   function renderSidebar() {
     $('#sb-title').textContent = curPanel;
@@ -508,6 +639,148 @@
       ua.classList.toggle('on', on);
       window.DYUpdate.setAuto(on);
     });
+
+    /* ---------- 模型配置面板 ---------- */
+    if ($('#cfg-save')) {
+      // 预设按钮：只改输入框，保存时统一提交
+      $$('#sb-body [data-prov]').forEach((b) => b.addEventListener('click', () => {
+        $$('#sb-body [data-prov]').forEach((x) => x.classList.toggle('on', x === b));
+        const base = $('#cfg-base'), path = $('#cfg-path');
+        if (base) base.value = b.dataset.base || '';
+        if (path) path.value = '/chat/completions';
+      }));
+
+      const readForm = () => {
+        const active = $('#sb-body [data-prov].on') || $('#sb-body [data-prov]');
+        const pid = active ? active.dataset.prov : 'custom';
+        const num = (v, d) => { const n = parseFloat(v); return isNaN(n) ? d : n; };
+        const maxRaw = $('#cfg-max').value.trim();
+        const prev = LLM.settings || {};
+        return {
+          provider: {
+            id: pid,
+            name: { openai: 'OpenAI', ollama: 'Ollama（本地）', custom: '自定义（OpenAI 兼容）' }[pid] || pid,
+            baseUrl: $('#cfg-base').value.trim(),
+            endpointPath: $('#cfg-path').value.trim() || '/chat/completions',
+            systemRole: 'system',
+            supportsStream: true,
+            requiresApiKey: pid !== 'ollama',
+            defaultHeaders: (prev.provider && prev.provider.defaultHeaders) || {},
+          },
+          narrator: {
+            model: $('#cfg-model').value.trim(),
+            temperature: num($('#cfg-temp').value, 0.85),
+            topP: num($('#cfg-topp').value, 0.95),
+            maxTokens: maxRaw === '' ? null : Math.max(1, parseInt(maxRaw, 10) || 0),
+            extraBody: (prev.narrator && prev.narrator.extraBody) || {},
+          },
+          arbiter: $('#cfg-arbiter').value.trim()
+            ? { model: $('#cfg-arbiter').value.trim(), temperature: 0.3, topP: 0.9, maxTokens: null, extraBody: {} }
+            : null,
+          timeoutSecs: (prev && prev.timeoutSecs) || 600,
+        };
+      };
+
+      /** 保存表单；`withKey` 为 true 时把非空的 Key 一并落盘（留空表示不改动）。 */
+      const persistForm = async (withKey) => {
+        await window.DYApp.llm.set(readForm());
+        if (withKey) {
+          const key = $('#cfg-key').value.trim();
+          if (key) await window.DYApp.llm.setKey(key);
+        }
+        await refreshLlm();
+      };
+
+      $('#cfg-save').addEventListener('click', async () => {
+        try { await persistForm(true); renderSidebar(); }
+        catch (e) { $('#cfg-log').textContent = '保存失败：' + ((e && e.message) || e); }
+      });
+
+      $('#cfg-test').addEventListener('click', async () => {
+        const log = $('#cfg-log');
+        log.textContent = '正在连接……';
+        try {
+          // 先用表单里的地址试，避免"改了 baseUrl 却没保存"导致的误判
+          await persistForm(true);
+          const list = await window.DYApp.llm.models();
+          $('#cfg-models').innerHTML = `<div class="sect-title">可 用 模 型 <span class="n">${list.length}</span></div>` +
+            `<div style="display:flex;flex-wrap:wrap;gap:6px">${list.slice(0, 60).map((m) => `<span class="chip purple">${esc(m)}</span>`).join('')}</div>`;
+          log.textContent = `连接成功，返回 ${list.length} 个模型。`;
+        } catch (e) {
+          log.textContent = '连接失败：' + ((e && e.message) || e);
+        }
+      });
+
+      $('#cfg-clearkey').addEventListener('click', async () => {
+        try { await window.DYApp.llm.clearKey(); await refreshLlm(); renderSidebar(); }
+        catch (e) { $('#cfg-log').textContent = '清除失败：' + ((e && e.message) || e); }
+      });
+    }
+
+    /* ---------- 进度同步面板 ---------- */
+    if ($('#sy-save')) {
+      const collect = () => ({
+        repo: $('#sy-repo').value.trim(),
+        branch: $('#sy-branch').value.trim() || 'main',
+        basePath: $('#sy-path').value.trim() || 'saves',
+        autoPush: $('#sy-auto').classList.contains('on'),
+      });
+      $('#sy-save').addEventListener('click', async () => {
+        try {
+          const cfg = collect();
+          await window.DYApp.sync.setConfig(cfg);
+          const token = $('#sy-token').value.trim();
+          if (token) await window.DYApp.sync.setToken(token);
+          await refreshSync();
+          renderSidebar();
+        } catch (e) { SYNC.error = String((e && e.message) || e); renderSidebar(); }
+      });
+      $('#sy-clear').addEventListener('click', async () => {
+        try { await window.DYApp.sync.clearToken(); await refreshSync(); renderSidebar(); }
+        catch (e) { SYNC.error = String((e && e.message) || e); renderSidebar(); }
+      });
+      $('#sy-refresh').addEventListener('click', async () => {
+        SYNC.log = '正在查询…'; renderSidebar(); await loadSyncLists();
+      });
+      $('#sy-pushall').addEventListener('click', async () => {
+        SYNC.log = '正在推送全部存档…'; renderSidebar();
+        try {
+          const r = await window.DYApp.sync.pushAll();
+          const rows = (r.saves || []).map((s) => `${s.id}：${s.error ? '失败 - ' + s.error : '上传 ' + (s.uploaded || []).length + ' 个文件'}`);
+          SYNC.log = '推送完成\n' + rows.join('\n');
+        } catch (e) { SYNC.log = ''; SYNC.error = String((e && e.message) || e); }
+        await loadSyncLists(); renderSidebar();
+      });
+      $$('#sb-body [data-sy-push]').forEach((b) => b.addEventListener('click', async () => {
+        const id = b.dataset.syPush;
+        SYNC.log = `推送 ${id}…`; renderSidebar();
+        try {
+          const r = await window.DYApp.sync.push(id, false);
+          SYNC.log = (r.uploaded && r.uploaded.length) ? `${id}：已上传 ${r.uploaded.join('、')}` : `${id}：内容无变化，无需上传`;
+        } catch (e) {
+          // 远端更新 → 询问是否强制
+          if (confirm(String((e && e.message) || e) + '\n\n要改为强制推送（覆盖远端）吗？')) {
+            try { const r2 = await window.DYApp.sync.push(id, true); SYNC.log = `${id}：已强制推送（${(r2.uploaded || []).join('、') || '无变化'}）`; }
+            catch (e2) { SYNC.log = '强制推送失败：' + ((e2 && e2.message) || e2); }
+          } else { SYNC.log = '已取消。'; }
+        }
+        renderSidebar();
+      }));
+      $$('#sb-body [data-sy-pull]').forEach((b) => b.addEventListener('click', async () => {
+        const id = b.dataset.syPull;
+        SYNC.log = `拉取 ${id}…`; renderSidebar();
+        try {
+          const r = await window.DYApp.sync.pull(id, false);
+          SYNC.log = `${id}：已写入 ${(r.written || []).join('、')}` + (r.backup ? `\n覆盖前的本机副本已备份到 ${r.backup}` : '');
+        } catch (e) {
+          if (confirm(String((e && e.message) || e) + '\n\n要改为强制拉取（覆盖本机）吗？')) {
+            try { const r2 = await window.DYApp.sync.pull(id, true); SYNC.log = `${id}：已强制拉取，备份 ${r2.backup || '无'}`; }
+            catch (e2) { SYNC.log = '强制拉取失败：' + ((e2 && e2.message) || e2); }
+          } else { SYNC.log = '已取消。'; }
+        }
+        renderSidebar();
+      }));
+    }
     renderRail();
   }
   function renderRail() {
@@ -672,6 +945,77 @@
         <div class="field"><input id="wiki-search" placeholder="搜索术语 / 人物 / 势力 / 地点……"></div>
         <div id="wiki-list">${wikiList('')}</div>`;
     }
+    if (id === '模型') {
+      const s = LLM.settings || {
+        provider: { id: 'openai', baseUrl: 'https://api.openai.com/v1', endpointPath: '/chat/completions' },
+        narrator: { model: '', temperature: 0.85, topP: 0.95, maxTokens: null },
+        arbiter: null,
+      };
+      const p = s.provider, n = s.narrator || {};
+      const sec = LLM.secrets || {};
+      const presets = { openai: 'OpenAI', ollama: 'Ollama（本地）', custom: '自定义 OpenAI 兼容' };
+      return `${LLM.shell ? '' : shellNote()}
+        <div class="cr-hint">API Key <b>只保存在本机</b>（安卓为应用私有目录），不进存档、不进同步、不上传任何服务器。请求由客户端本机直发。</div>
+        <div class="field"><label>接口预设</label>
+          <div class="opts">${Object.keys(presets).map((k) =>
+        `<button class="opt ${p.id === k ? 'on' : ''}" data-prov="${k}" data-base="${esc((D.PROVIDER_PRESETS[k] || {}).baseUrl || '')}" data-needkey="${(D.PROVIDER_PRESETS[k] || {}).requiresApiKey ? 1 : 0}">${presets[k]}</button>`).join('')}</div>
+        </div>
+        <div class="field"><label>接口地址 base URL</label><input id="cfg-base" value="${esc(p.baseUrl || '')}" placeholder="https://api.openai.com/v1"></div>
+        <div class="field"><label>对话路径</label><input id="cfg-path" value="${esc(p.endpointPath || '/chat/completions')}"></div>
+        <div class="field"><label>API Key${sec.llmKeySet ? ' · 已保存 ' + esc(sec.llmKeyHint) : ''}</label>
+          <input id="cfg-key" type="password" autocomplete="off" placeholder="${sec.llmKeySet ? '留空则不改动' : 'sk-…'}"></div>
+        <div class="field"><label>叙事模型（主）</label><input id="cfg-model" value="${esc(n.model || '')}" placeholder="gpt-4o"></div>
+        <div class="opts">
+          <div class="field" style="margin:0"><label>温度</label><input id="cfg-temp" value="${n.temperature != null ? n.temperature : 0.85}"></div>
+          <div class="field" style="margin:0"><label>top_p</label><input id="cfg-topp" value="${n.topP != null ? n.topP : 0.95}"></div>
+          <div class="field" style="margin:0"><label>max_tokens（可空）</label><input id="cfg-max" value="${n.maxTokens == null ? '' : n.maxTokens}"></div>
+        </div>
+        <div class="field"><label>裁决模型（辅，可空）</label><input id="cfg-arbiter" value="${esc((s.arbiter && s.arbiter.model) || '')}" placeholder="gpt-4o-mini"></div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn primary" id="cfg-save">保 存</button>
+          <button class="btn" id="cfg-test">测试 · 拉取模型</button>
+        </div>
+        <div style="margin-top:8px"><button class="btn" id="cfg-clearkey" style="width:100%">清 除 Key</button></div>
+        <div id="cfg-log" class="cr-hint" style="margin-top:12px">${LLM.error ? '壳通信失败：' + esc(LLM.error)
+          : LLM.ready ? '<span style="color:var(--ok)">状态：已就绪 —— 行动将走大模型生成。</span>'
+            : '状态：未配置完整 —— 行动暂用离线示例文本。'}</div>
+        <div id="cfg-models"></div>`;
+    }
+
+    if (id === '同步') {
+      const c = SYNC.config || { repo: '', branch: 'main', basePath: 'saves', autoPush: false };
+      const sec = SYNC.secrets || {};
+      const fmt = (t) => (t ? new Date(t).toLocaleString('zh-CN') : '—');
+      return `${SYNC.shell ? '' : shellNote()}
+        <div class="cr-hint">用你自己的 GitHub 仓库当同步盘，多端进度互通。<b>令牌只存本机</b>；<b>建议用私有仓库</b>，令牌权限只需该仓库的 Contents 读写。</div>
+        <div class="field"><label>仓库（owner/repo）</label><input id="sy-repo" value="${esc(c.repo || '')}" placeholder="your-name/dyapp-saves"></div>
+        <div class="opts">
+          <div class="field" style="margin:0"><label>分支</label><input id="sy-branch" value="${esc(c.branch || 'main')}"></div>
+          <div class="field" style="margin:0"><label>目录</label><input id="sy-path" value="${esc(c.basePath || 'saves')}"></div>
+        </div>
+        <div class="field"><label>GitHub 令牌${sec.syncTokenSet ? ' · 已保存 ' + esc(sec.syncTokenHint) : ''}</label>
+          <input id="sy-token" type="password" autocomplete="off" placeholder="${sec.syncTokenSet ? '留空则不改动' : 'ghp_… 或 github_pat_…'}"></div>
+        <div class="set-row"><div class="lbl">推送后自动同步<div class="d">每次存档后自动推送（默认关闭）</div></div><div class="switch ${c.autoPush ? 'on' : ''}" id="sy-auto"></div></div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn primary" id="sy-save">保 存</button>
+          <button class="btn" id="sy-clear">清除令牌</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="sy-refresh">刷新存档列表</button>
+          <button class="btn" id="sy-pushall">全部推送</button>
+        </div>
+        <div class="sect-title">本 机 存 档 <span class="n">${SYNC.local.length}</span></div>
+        ${SYNC.local.length ? SYNC.local.map((s) => `<div class="set-row">
+            <div class="lbl">${esc(s.id)}<div class="d">更新于 ${fmt(s.updatedAt)}</div></div>
+            <button class="btn" data-sy-push="${esc(s.id)}" style="flex:none;min-width:70px;padding:8px 10px">推送</button>
+            <button class="btn" data-sy-pull="${esc(s.id)}" style="flex:none;min-width:70px;padding:8px 10px">拉取</button>
+          </div>`).join('') : '<div class="cr-hint">本机暂无存档。</div>'}
+        <div class="sect-title">远 端 存 档 <span class="n">${SYNC.remote.length}</span></div>
+        ${SYNC.remote.length ? SYNC.remote.map((r) => `<div class="set-row"><div class="lbl">${esc(r.name)}<div class="d">${r.isDir ? '存档目录' : Math.round((r.size || 0) / 1024) + ' KB'}</div></div></div>`).join('') : '<div class="cr-hint">远端暂无内容（点「刷新存档列表」查询）。</div>'}
+        ${SYNC.log ? `<div class="upd-notes" style="margin-top:12px">${esc(SYNC.log)}</div>` : ''}
+        ${SYNC.error ? `<div class="cr-hint" style="color:var(--bad)">${esc(SYNC.error)}</div>` : ''}`;
+    }
+
     if (id === '设置') {
       const rows = [
         ['暗色 · 鎏金主题', '沿用卡片状态栏配色', true], ['神视模式', '显示精确数值而非模糊语', false],
@@ -720,6 +1064,11 @@
   renderStream(); renderHUD(); renderActions(); renderSidebar();
   showScreen('s-boot');
   renderUpdateChip();
+
+  // 壳能力探测：在 Tauri 里读本地模型配置与同步配置；浏览器里保持降级
+  refreshLlm();
+  refreshSync().then(() => loadSyncLists());
+
   // 启动时静默检查更新（可在设置里关闭；失败静默降级，不打扰玩家）
   if (window.DYUpdate.autoEnabled()) {
     window.DYUpdate.check().then(() => {

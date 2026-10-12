@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "道渊：仅开放本项目用到的核心能力。不授予文件系统、shell、HTTP 等通用权限——所有出网与文件读写都在 Rust 侧按需实现。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:app:default"
+  ]
+}
