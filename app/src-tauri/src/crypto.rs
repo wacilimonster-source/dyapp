@@ -29,29 +29,45 @@ const KEY_FILE: &str = "install.key";
 
 /* ============================ 对外接口 ============================ */
 
-/// 加密。Windows 走 DPAPI；其它平台走 AEAD。
+/// 加密。
+///
+/// **注意分派方式**：非 Windows 平台直接走 AEAD，不能写成"先试 DPAPI 再兜底"
+/// ——那样在安卓/Linux 上 `platform_seal` 恒返回 Err，AEAD 兜底又只在 Windows 分支里编译，
+/// 结果就是密钥功能在安卓上彻底不可用（这个 bug 是 CI 的 Linux 任务抓出来的）。
 pub fn seal(config_dir: &Path, plaintext: &[u8]) -> AppResult<Vec<u8>> {
-    platform_seal(plaintext).or_else(|dpapi_err| {
-        #[cfg(windows)]
-        {
-            // DPAPI 失败（极少见）时退回 AEAD，保证功能可用，但要留痕
+    #[cfg(windows)]
+    {
+        platform_seal(plaintext).or_else(|dpapi_err| {
+            // DPAPI 极其罕见地失败时退回 AEAD，保证功能可用，但要留痕
             eprintln!("[crypto] DPAPI 不可用，退回 AEAD：{dpapi_err}");
             aead_seal(config_dir, plaintext)
-        }
-        #[cfg(not(windows))]
-        {
-            Err(dpapi_err)
-        }
-    })
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        aead_seal(config_dir, plaintext)
+    }
 }
 
-/// 解密。
+/// 解密。按密文里的版本头选择算法。
 pub fn open(config_dir: &Path, blob: &[u8]) -> AppResult<Vec<u8>> {
-    if blob.len() < 4 || &blob[..4] != MAGIC {
+    if blob.len() < 5 || &blob[..4] != MAGIC {
         return Err(AppError::Data("密钥文件格式不对或已损坏".into()));
     }
     match blob[4] {
-        1 => platform_open(blob),
+        1 => {
+            #[cfg(windows)]
+            {
+                platform_open(blob)
+            }
+            #[cfg(not(windows))]
+            {
+                Err(AppError::Data(
+                    "该密钥文件由 Windows 的 DPAPI 加密，无法在本平台解开；请在本机重新填写一次。"
+                        .into(),
+                ))
+            }
+        }
         2 => aead_open(config_dir, blob),
         v => Err(AppError::Data(format!("不认识的密钥文件版本：{v}"))),
     }
@@ -132,16 +148,6 @@ fn platform_open(blob: &[u8]) -> AppResult<Vec<u8>> {
 }
 
 /* ============================ 其它平台: AEAD ============================ */
-
-#[cfg(not(windows))]
-fn platform_seal(_plaintext: &[u8]) -> AppResult<Vec<u8>> {
-    Err(AppError::Other("本平台不使用 DPAPI".into()))
-}
-
-#[cfg(not(windows))]
-fn platform_open(_blob: &[u8]) -> AppResult<Vec<u8>> {
-    Err(AppError::Other("本平台不使用 DPAPI".into()))
-}
 
 /// 派生密钥：HKDF-SHA256(ikm = 随机主密钥, salt = install.salt, info = 用途串)。
 fn derive_key(config_dir: &Path) -> AppResult<[u8; 32]> {
@@ -298,6 +304,26 @@ mod tests {
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01;
         assert!(open(&dir, &sealed).is_err(), "篡改必须被检测到");
+    }
+
+    /// 直接压 AEAD 路径：这样非 Windows 平台的存储逻辑在 Windows 开发机上也能被验证。
+    #[test]
+    fn aead_路径往返且能检测篡改() {
+        let dir = tmp_dir("aead");
+        let plain = br#"{"llm_api_key":"sk-aead-1234567890"}"#;
+        let sealed = aead_seal(&dir, plain).unwrap();
+        assert!(is_sealed(&sealed));
+        assert_eq!(&sealed[4], &2u8, "版本头应为 2（AEAD）");
+        assert_eq!(aead_open(&dir, &sealed).unwrap(), plain);
+
+        let mut bad = sealed.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        assert!(aead_open(&dir, &bad).is_err(), "AEAD 必须能检测篡改");
+
+        // 换一个目录（等价于"换了设备"）：主密钥不同，必须解不开
+        let other = tmp_dir("aead-other");
+        assert!(aead_open(&other, &sealed).is_err(), "换设备后不应能解开");
     }
 
     #[test]
