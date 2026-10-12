@@ -47,7 +47,14 @@ jobs:
           NOTES="release-notes/${TAG}.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在 → 更新说明与附件"
-            if [ -f "$NOTES" ]; then gh release edit "$TAG" --notes-file "$NOTES"; else gh release edit "$TAG" --generate-notes; fi
+            # --draft=false 很关键：**删掉 tag 会把已发布的 Release 变成草稿**，
+            # 草稿对外不可见（匿名 API 查不到、releases/latest 也不指向它），
+            # 而"只是 edit 一下"并不会把它变回公开发布。这里显式发布一次。
+            if [ -f "$NOTES" ]; then
+              gh release edit "$TAG" --draft=false --notes-file "$NOTES"
+            else
+              gh release edit "$TAG" --draft=false --generate-notes
+            fi
             gh release upload "$TAG" "$ZIP" --clobber
           elif [ -f "$NOTES" ]; then
             gh release create "$TAG" "$ZIP" --title "$TAG" --notes-file "$NOTES"
@@ -55,6 +62,8 @@ jobs:
             gh release create "$TAG" "$ZIP" --title "$TAG" --generate-notes
           fi
           if [ -f "$NOTES" ]; then echo "更新说明来自 $NOTES"; else echo "::notice::没有 release-notes/${TAG}.md，本次用自动生成的说明"; fi
+          # 收尾自查：确认它对外是"已发布、非草稿"，免得又是"流程全绿但 Release 看不见"
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
 
   # 安卓 APK 一并挂到 Release 附件（客户端「检查更新」打开的就是这个 Release）。
   #
@@ -83,17 +92,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 不装 android-actions/setup-android：ubuntu-latest 镜像**自带** Android SDK 与 cmdline-tools，
-      # sdkmanager 已在 PATH 上。实测那个 action 在 v3 会失败（job 报 failure、后续步骤全 skipped），
-      # 而它装的东西镜像里本来就有——少一个外部依赖，少一处坏点。
-      - name: 安装 Android NDK
+      # 不装 android-actions/setup-android：它在 v3 实测直接失败（job 报 failure、后续步骤全 skipped）。
+      # 镜像自带的 Android SDK 在 /usr/local/lib/android/sdk，但 cmdline-tools 未必在 PATH 上，
+      # 所以这里自己把它接上（找不到就明确报错，别留下"跑过了但什么也没做"的假象）。
+      - name: 接上 Android SDK 并安装 NDK
         run: |
-          command -v sdkmanager >/dev/null || { echo "::error::镜像里没有 sdkmanager（Android SDK 未预装？）"; exit 1; }
+          set -e
+          if [ -z "${ANDROID_HOME:-}" ] && [ -d /usr/local/lib/android/sdk ]; then
+            export ANDROID_HOME=/usr/local/lib/android/sdk
+          fi
+          if [ -z "${ANDROID_HOME:-}" ]; then echo "::error::找不到 Android SDK（ANDROID_HOME 未设置）"; exit 1; fi
+          for d in "$ANDROID_HOME/cmdline-tools/latest/bin" "$ANDROID_HOME/cmdline-tools/bin" "$ANDROID_HOME/tools/bin"; do
+            [ -d "$d" ] && export PATH="$d:$PATH"
+          done
+          command -v sdkmanager >/dev/null || { echo "::error::sdkmanager 仍不可用，检查镜像的 cmdline-tools 布局"; ls -R "$ANDROID_HOME" | head -40; exit 1; }
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;27.0.12077973" > /dev/null
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          test -d "$ANDROID_HOME/ndk/27.0.12077973" || { echo "::error::NDK 没装到位"; exit 1; }
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973"
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973"
+          } >> "$GITHUB_ENV"
 
       - name: 安装 tauri-cli
         run: cargo install tauri-cli --version "^2" --locked

@@ -59,15 +59,26 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 不用 android-actions/setup-android：ubuntu-latest 自带 Android SDK + cmdline-tools，
-      # 而那个 action 在 v3 实测会失败（见 release.yml 同处注释）。
-      - name: 安装 Android NDK
+      # 不用 android-actions/setup-android（v3 实测直接失败）。改成自己把镜像里的
+      # cmdline-tools 接上 PATH——同 release.yml 里的做法与理由。
+      - name: 接上 Android SDK 并安装 NDK
         run: |
-          command -v sdkmanager >/dev/null || { echo "::error::镜像里没有 sdkmanager"; exit 1; }
+          set -e
+          if [ -z "${ANDROID_HOME:-}" ] && [ -d /usr/local/lib/android/sdk ]; then
+            export ANDROID_HOME=/usr/local/lib/android/sdk
+          fi
+          if [ -z "${ANDROID_HOME:-}" ]; then echo "::error::找不到 Android SDK"; exit 1; fi
+          for d in "$ANDROID_HOME/cmdline-tools/latest/bin" "$ANDROID_HOME/cmdline-tools/bin" "$ANDROID_HOME/tools/bin"; do
+            [ -d "$d" ] && export PATH="$d:$PATH"
+          done
+          command -v sdkmanager >/dev/null || { echo "::error::sdkmanager 不可用"; exit 1; }
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;27.0.12077973" > /dev/null
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973"
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973"
+          } >> "$GITHUB_ENV"
 
       - name: 安装 tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
