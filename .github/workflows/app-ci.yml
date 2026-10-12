@@ -52,12 +52,15 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 界面 JS 语法检查
+      - name: 界面与内核 JS 语法检查
         run: |
-          for f in prototype/*.js; do
+          while IFS= read -r f; do
             echo "check $f"
             node --check "$f"
-          done
+          done < <(find prototype -name '*.js' -not -path '*/node_modules/*' | sort)
+
+      - name: 内核单元测试
+        run: node --test
 
       - name: 界面不得引用外部 CDN
         run: |
@@ -74,7 +77,7 @@ jobs:
           grep -oE "(call|invoke)\('[a-z_]+'" prototype/bridge.js \
             | sed -E "s/.*\('//; s/'$//" | tr -d '\r' | sort -u > /tmp/web_cmds.txt
           sed -n '/generate_handler!\[/,/\]/p' app/src-tauri/src/lib.rs \
-            | grep -oE "\b(llm|sync)_[a-z_]+" | tr -d '\r' | sort -u > /tmp/rust_cmds.txt
+            | grep -oE "\b(llm|sync|save)_[a-z_]+" | tr -d '\r' | sort -u > /tmp/rust_cmds.txt
           echo "--- 前端调用 ---"; cat /tmp/web_cmds.txt
           echo "--- Rust 注册 ---"; cat /tmp/rust_cmds.txt
           missing="$(comm -23 /tmp/web_cmds.txt /tmp/rust_cmds.txt)"

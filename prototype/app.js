@@ -1,6 +1,18 @@
-/* 《道渊》独立版 · 安卓原型 — 应用逻辑
+/* 《道渊》独立版 · 应用逻辑（ESM 模块）
+ *
+ * 分层：本文件只做**界面编排**；规则与状态在 engine/，检索在 memory/，提示词在 narrator/，
+ * 存档在 store/。所有确定性计算都不在这里。
+ *
  * 版式判定：真机按屏幕宽度（>=700px 判为平板）；桌面可用右下角开关切换预览。
  */
+import { normalize as normalizeState, snapshot, emptyState } from './engine/state.js';
+import { applyAll } from './engine/effects.js';
+import { runTurn } from './engine/turn.js';
+import { daoStage, vague, crisisLevel } from './engine/rules.js';
+import { buildIndex } from './memory/index.js';
+import { tokenize } from './memory/tokenize.js';
+import { createStore, newSaveId } from './store/index.js';
+
 (function () {
   'use strict';
   const D = window.DY;
@@ -12,15 +24,36 @@
   const rnd = (n) => Math.floor(Math.random() * n);
   const pick = (a) => a[rnd(a.length)];
 
-  const state = deep(D.state);
+  /** 权威状态：一切写入都过引擎归一化。 */
+  const state = normalizeState(deep(D.state));
   const turns = deep(D.turns);
   const app = $('#app');
+
+  /** 世界书索引（异步加载，未就绪时为 null —— 引擎会降级为只注入常驻法则）。 */
+  let WORLD_INDEX = null;
+  let WORLDBOOK = null;
+  /** 存档后端（壳 / localStorage）。 */
+  const store = createStore();
+  let currentSaveId = newSaveId();
+
+  async function loadWorldbook() {
+    try {
+      const res = await fetch('data/worldbook.json', { cache: 'force-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      WORLDBOOK = await res.json();
+      WORLD_INDEX = buildIndex(WORLDBOOK, { realm: state.主角.所在界 });
+      return WORLDBOOK;
+    } catch (e) {
+      console.warn('[worldbook] 加载失败，检索降级为只注入常驻法则：', e.message);
+      return null;
+    }
+  }
 
   const PANELS = [
     { id: '主角', icon: '☯' }, { id: '道侣', icon: '💞' }, { id: '人物', icon: '👤' },
     { id: '灵宠', icon: '🐾' }, { id: '机遇', icon: '📜' }, { id: '绝色榜', icon: '🏮' },
     { id: '玉简', icon: '📱' }, { id: '背包', icon: '🎒' }, { id: '地图', icon: '🗺' },
-    { id: '图鉴', icon: '📖' }, { id: '模型', icon: '🔌' }, { id: '同步', icon: '☁' },
+    { id: '图鉴', icon: '📖' }, { id: '存档', icon: '💾' }, { id: '模型', icon: '🔌' }, { id: '同步', icon: '☁' },
     { id: '设置', icon: '⚙' },
   ];
   let curPanel = '主角';
@@ -198,27 +231,70 @@
       createState.灵根 = tier; createState.spinning = false; renderCreate();
     }, 900);
   }
+  /**
+   * 创角产物 → 初始 GameState 快照。
+   * 用引擎的 emptyState 起手，所有数值最后过一次 normalize，保证与游戏中的状态同构。
+   */
   function applyCreate() {
     const g = createState;
-    state.主角.姓名 = g.姓名 || '陆沉';
-    state.主角.性别 = g.性别;
-    state.主角.所在界 = g.出生界;
-    state.主角.宗门 = g.出身 === '寒门散修' ? '散修' : g.出身 === '青云宗外门' || g.出身 === '宗门外门' ? '青云宗 · 外门' : '没落世家';
-    if (g.灵根) { state.主角.灵根 = g.灵根.品 + ' · 单灵根'; state.主角.道心 = clamp(state.主角.道心 + (g.灵根.品 === '天品' ? 10 : 0), 0, 100); }
-    g.气运.forEach((n) => { state.主角.气运[n] = { 类型: n.startsWith('真·') ? '主动' : '被动', 效果: '（创角所选气运）', 使用状态: '常驻', 压制状态: '正常', 真: n.startsWith('真·') }; });
-    if (g.道侣) { state.道侣 = {}; state.道侣[g.道侣] = { 性别: '女', 种族: '人族', 状态: '正常', 境界: '筑基后期', 亲密: 20, 生命: 90, 灵力: 80, 修为: 60, 道心: 68, 性格: '尚未看清。', 外观: '——', 身高: '——', 背景: '命中注定要遇见的人。', 神通: '——', 心声: '（终于……见到你了。）' }; }
-    // 重置叙事流为开局
+    const fresh = emptyState();
+
+    fresh.主角.姓名 = g.姓名 || '陆沉';
+    fresh.主角.性别 = g.性别 || '男';
+    fresh.主角.所在界 = g.出生界 || '玄天界';
+    fresh.主角.宗门 = g.出身 === '寒门散修' ? '散修'
+      : (g.出身 === '宗门外门' || g.出身 === '青云宗外门') ? '青云宗 · 外门'
+        : g.出身 === '没落世家' ? '没落世家' : '散修';
+    if (g.出生界 === '仙界') fresh.主角.境界 = '真仙一层';
+    fresh.主角.灵根 = g.灵根 ? `${g.灵根.品} · 单灵根` : '凡品 · 单灵根';
+    if (g.出身 === '寒门散修') fresh.主角.道心 = 58;
+    if (g.出身 === '宗门外门' || g.出身 === '青云宗外门') fresh.主角.宗门贡献 = 120;
+    if (g.灵根 && g.灵根.品 === '天品') fresh.主角.道心 = clamp(fresh.主角.道心 + 10, 0, 100);
+
+    for (const n of g.气运 || []) {
+      fresh.主角.气运[n] = {
+        类型: n.startsWith('真·') ? '主动' : '被动',
+        效果: '（创角所选气运）',
+        使用状态: '常驻',
+        压制状态: '正常',
+        真: n.startsWith('真·'),
+      };
+    }
+
+    const 灵石 = g.出身 === '没落世家' ? 36 : 16;
+    fresh.主角.储物袋['下品灵石'] = { 描述: '修仙界通用硬通货', 数量: 灵石 };
+    fresh.主角.储物袋['聚气丹'] = { 描述: '服之可缓缓回复灵力', 数量: 3 };
+    fresh.主角.储物袋['疗伤散'] = { 描述: '外伤止血，聊胜于无', 数量: 2 };
+    fresh.主角.功法['青云吐纳诀'] = { 类型: '筑基功法', 境界: '炼气期', 熟练度: 0, 描述: '青云宗外门入门吐纳之法，中正平和。' };
+    fresh.主角.器物['青纹剑'] = { 等级: '下品法器', 类型: '飞剑', 损耗度: 0, 状态: '完好', 描述: '剑身一道青纹，注入灵力可御使三丈。' };
+
+    if (g.道侣) {
+      fresh.道侣[g.道侣] = {
+        性别: '女', 种族: '人族', 状态: '正常', 境界: '筑基后期',
+        亲密: 20, 生命: 90, 灵力: 80, 修为: 60, 道心: 68,
+        性格: '尚未看清。', 外观: '——', 身高: '——',
+        背景: '命中注定要遇见的人。', 神通: '——', 心声: '（终于……见到你了。）',
+      };
+    }
+
+    normalizeState(fresh);
+    // 原地替换当前状态（state 被大量闭包共享，不能换引用）
+    for (const k of Object.keys(state)) delete state[k];
+    Object.assign(state, fresh);
+
     turns.length = 0;
     turns.push({
       role: 'assistant',
       text: `${state.主角.姓名}，${state.主角.所在界}的风，比你想的更冷一些。\n\n你睁开眼时，身下是青云宗后山的青石，衣袍还带着洗不净的皂角味。远处钟声三响，是外门晨课的时辰。\n\n你的道途，从这一刻开始。`,
-      scene: { 当前时间: '初春 · 清晨', 当前地点: '青云宗 · 后山', 危机程度: '无' },
+      scene: { 当前时间: state.世界.当前时间, 当前地点: state.世界.当前地点, 危机程度: state.世界.危机程度 },
       choices: ['起身去上晨课', '先查看自己的储物袋', '往后山深处走走'],
     });
-    state.世界.当前时间 = '初春 · 清晨';
-    state.世界.当前地点 = '青云宗 · 后山';
-    state.世界.危机程度 = '无';
+
+    currentSaveId = newSaveId('save');
+    if (WORLDBOOK) WORLD_INDEX = buildIndex(WORLDBOOK, { realm: state.主角.所在界 });
+
     showScreen('s-game'); renderStream(); renderHUD(); renderSidebar();
+    autosave();
   }
   $('#cr-back').addEventListener('click', () => {
     if (createState.step === 0) showScreen('s-boot'); else { createState.step--; renderCreate(); }
@@ -226,18 +302,23 @@
   $('#cr-skip').addEventListener('click', () => { applyCreate(); });
 
   /* ================= HUD ================= */
+  /** 神视模式：默认关闭，六维只显示模糊语（卡设定"主角无法感知精确数值"）。 */
+  let showExact = false;
+
   function barHTML(key, val, color, note) {
     const v = clamp(Number(val) || 0, 0, 100);
-    return `<div class="bar" data-res="${key}"><div class="t"><span>${key}${note ? '<i> ' + note + '</i>' : ''}</span><b>${v}</b></div>
+    const shown = showExact ? String(v) : vague(v);
+    return `<div class="bar" data-res="${key}"><div class="t"><span>${key}${note ? '<i> ' + note + '</i>' : ''}</span><b>${shown}</b></div>
       <div class="track"><div class="fill" style="width:${v}%;background:${color}"></div></div></div>`;
   }
   function renderHUD() {
     const W = state.世界, P = state.主角;
-    const lv = D.CRISIS[W.危机程度] || 0;
+    const lv = crisisLevel(W.危机程度);
     $('#hud').innerHTML = `
       <div class="hud-row1">
         <span class="name">${esc(P.姓名)}</span>
-        <span class="realm">${esc(P.境界)}（DC:${P.境界DC}）</span>
+        <!-- 境界标签已含 DC（engine 的 realmLabel 生成），此处不再拼接 -->
+        <span class="realm">${esc(P.境界)}</span>
         <span class="spacer"></span>
         <button class="iconbtn" id="hud-menu" title="面板">☰</button>
       </div>
@@ -247,7 +328,7 @@
         <span>遭遇冷却 ${W.遭遇冷却}</span>
       </div>
       <div class="hud-bars">
-        ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '修为' && P.修为 >= 100 ? '瓶颈' : r.key === '道心' ? D.DAO_STAGE(P.道心) : '')).join('')}
+        ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '修为' && P.修为 >= 100 ? '瓶颈' : r.key === '道心' ? daoStage(P.道心) : '')).join('')}
       </div>`;
     $('#hud-menu').addEventListener('click', () => openPanel(curPanel));
   }
@@ -274,22 +355,6 @@
     $('#stream').insertAdjacentHTML('beforeend', msgHTML(t));
     scrollStream();
   }
-  function typeAssistant(t) {
-    const wrap = document.createElement('div');
-    wrap.className = 'msg assistant';
-    const fx = (t.effects || []).filter((e) => e.op === 'delta' && /\.(生命|精血|灵力|修为|神识|道心|好感|亲密)$/.test(e.target))
-      .map((e) => `<span class="fx-chip ${e.value >= 0 ? 'up' : 'down'}">${e.target.split('.').pop()} ${e.value >= 0 ? '+' : ''}${e.value}</span>`).join('');
-    const ch = (t.choices || []).length ? `<div class="choices">${t.choices.map((c) => `<button class="choice" data-choice="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : '';
-    wrap.innerHTML = `<div class="who">道渊</div><div class="bubble typing"></div>${fx ? `<div class="fx">${fx}</div>` : ''}${ch}`;
-    $('#stream').appendChild(wrap);
-    const bubble = $('.bubble', wrap);
-    const text = t.text, chunk = Math.max(1, Math.ceil(text.length / 42));
-    let i = 0;
-    const timer = setInterval(() => {
-      i += chunk; bubble.textContent = text.slice(0, i); scrollStream();
-      if (i >= text.length) { clearInterval(timer); bubble.textContent = text; bubble.classList.remove('typing'); scrollStream(); }
-    }, 16);
-  }
 
   /* ================= 行动区 ================= */
   const ACTS = [
@@ -312,24 +377,12 @@
   });
   function doAction(kind, panel) {
     if (panel) { openPanel(panel); return; }
-    if (kind === '突破') { judge(); return; }
+    if (kind === '突破') { breakthrough(); return; }
     if (kind === '面板') { openPanel(curPanel); return; }
     if (kind === '探索') return freeText('四处探索，看看这附近有什么。');
     if (kind === '修炼') return cultivate();
     if (kind === '交流') return freeText('去找镇上的修士聊聊天。');
   }
-  function advanceTime(days) {
-    const t = ['清晨', '上午', '午后', '黄昏', '入夜'];
-    const cur = state.世界.当前时间.split(' · ')[1] || '黄昏';
-    let i = t.indexOf(cur); i = (i + 1) % t.length;
-    state.世界.当前时间 = state.世界.当前时间.split(' · ')[0] + ' · ' + t[i];
-  }
-  function tickCooldown() {
-    state.世界.遭遇冷却 = clamp(state.世界.遭遇冷却 - 1, 0, 15);
-    if (state.世界.遭遇冷却 === 0) { state.世界.遭遇冷却 = 6; return true; }
-    return false;
-  }
-
   const REPLIES = [
     { text: '你顺着青石路往镇中走。雨后的坊市飘着湿腥的土味，摊贩们把灵材摊在油布上，时不时抬眼打量你这一身旧袍。\n\n一个卖符纸的老者冲你笑了笑：「小友面生。这年头，面生的人最容易出事——尤其，别往后山去。」', fx: [{ op: 'delta', target: '主角.神识', value: 2, reason: '留意四周' }], choices: ['追问「后山什么事」', '买两张符纸', '不理会，继续走'] },
     { text: '你在一处茶摊坐下，要了碗最便宜的粗茶。邻桌两个散修正低声争执着什么，提到「采药人」「魂灯灭了」几个字眼，见你望过去，立刻收声。\n\n这镇子，藏着事。', fx: [{ op: 'delta', target: '主角.灵力', value: 4, reason: '歇息' }], choices: ['凑过去听', '结账离开', '记住那两张脸'] },
@@ -341,62 +394,213 @@
     choices: ['拱手行礼，报上名号', '不动声色，先退半步', '反问她是谁'],
   };
 
-  async function freeText(text) {
-    turns.push({ role: 'user', text });
-    appendTurn(turns[turns.length - 1]);
-    const enc = tickCooldown();
-
-    // 配好了大模型就走真接口；否则（或调用失败）回退到离线示例文本
-    if (LLM.ready) {
-      const ok = await narrateWithLlm(text);
-      renderHUD();
-      if (ok) return;
+  /** 走引擎跑一回合：推进 → 检索 → 叙事(流式) → 裁决 → 落地 → 刷界面。 */
+  async function runEngineTurn(action, opts = {}) {
+    const { bubble, wrap } = newAssistantBubble();
+    const llm = window.DYApp.available() && LLM.ready ? window.DYApp.llm : null;
+    let result;
+    try {
+      result = await runTurn({
+        action,
+        state,
+        index: WORLD_INDEX,
+        llm,
+        rng: Math.random,
+        recent: turns.slice(-8).map((t) => ({ role: t.role, text: t.text })),
+        arbiterConfigured: !!(LLM.settings && LLM.settings.arbiter && LLM.settings.arbiter.model),
+        onDelta: (_chunk, full) => { bubble.textContent = full; scrollStream(); },
+        fallbackNarratives: REPLIES.map((r) => r.text),
+      });
+    } catch (e) {
+      bubble.classList.remove('typing');
+      bubble.textContent = '回合执行失败：' + ((e && e.message) || e);
+      turns.push({ role: 'assistant', text: bubble.textContent });
+      return null;
     }
 
-    const r = enc ? ENCOUNTER : pick(REPLIES);
-    const t = { role: 'assistant', text: r.text, effects: r.fx, choices: r.choices, scene: { 当前时间: state.世界.当前时间, 当前地点: state.世界.当前地点, 危机程度: state.世界.危机程度 } };
-    advanceTime(0);
-    applyEffects(r.fx || []);
-    turns.push(t); typeAssistant(t); renderHUD();
+    if (opts.holdForJudge && result.duel) {
+      // 突破：先把判定结果交给玩家确认，再揭示正文
+      showJudge(result.duel, () => paintTurn(bubble, wrap, result));
+      return result;
+    }
+    paintTurn(bubble, wrap, result);
+    return result;
+  }
+
+  /** 把一回合的结果画进叙事流。 */
+  function paintTurn(bubble, wrap, result) {
+    bubble.classList.remove('typing');
+    bubble.textContent = result.narrative;
+
+    const fx = (result.effects || []).filter(
+      (e) => e.op === 'delta' && /\.(生命|精血|灵力|修为|神识|道心|好感|亲密|亲密度)$/.test(e.target),
+    );
+    if (fx.length) {
+      wrap.insertAdjacentHTML('beforeend', `<div class="fx">${fx.map((e) =>
+        `<span class="fx-chip ${e.value >= 0 ? 'up' : 'down'}">${e.target.split('.').pop()} ${e.value >= 0 ? '+' : ''}${e.value}</span>`).join('')}</div>`);
+    }
+    if (result.encounter) {
+      wrap.insertAdjacentHTML('beforeend', `<div class="fx"><span class="fx-chip">偶遇 · ${esc(result.encounter.name)}</span></div>`);
+    }
+    const choices = result.choices || [];
+    if (choices.length) {
+      wrap.insertAdjacentHTML('beforeend', `<div class="choices">${choices.map((c) =>
+        `<button class="choice" data-choice="${esc(c)}">${esc(c)}</button>`).join('')}</div>`);
+    }
+
+    turns.push({ role: 'assistant', text: result.narrative, effects: result.effects, choices, scene: result.scene });
+    scrollStream();
+    renderHUD();
+    if (!['设置', '模型', '同步', '存档'].includes(curPanel)) renderSidebar();
+    autosave();
+  }
+
+  /* ================= 存档 ================= */
+  const SAVE = { list: [], log: '', busy: false };
+
+  function buildBundle() {
+    return {
+      meta: {
+        id: currentSaveId,
+        name: `${state.主角.姓名} · ${state.主角.境界}`,
+        summary: `${state.世界.当前地点} · ${state.世界.当前时间} · 第 ${state.世界.天数} 日`,
+      },
+      state: snapshot(state),
+      turns,
+      world: {
+        绝色榜: Object.keys(state.绝色榜 || {}),
+        人物: Object.keys(state.人物 || {}),
+        足迹: [...new Set(turns.filter((t) => t.scene && t.scene.当前地点).map((t) => t.scene.当前地点))],
+      },
+    };
+  }
+
+  /** 自动存档：每回合结束落一次（状态已由引擎归一化）。 */
+  let autosaveTimer = null;
+  function autosave() {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => { saveNow(true); }, 400);
+  }
+
+  async function saveNow(silent = false) {
+    try {
+      const meta = await store.write(currentSaveId, buildBundle());
+      SAVE.log = `已保存 ${meta.id}（${new Date(meta.updatedAt).toLocaleString('zh-CN')}）`;
+    } catch (e) {
+      SAVE.log = '保存失败：' + ((e && e.message) || e);
+      if (!silent) console.warn('[store]', SAVE.log);
+    }
+    if (!silent) { await refreshSaves(); renderSidebar(); }
+  }
+
+  async function refreshSaves() {
+    try {
+      SAVE.list = await store.list();
+    } catch (e) {
+      SAVE.log = '读取存档列表失败：' + ((e && e.message) || e);
+    }
+  }
+
+  async function loadSave(id) {
+    try {
+      const b = await store.read(id);
+      if (!b || !b.state) throw new Error('该存档没有状态数据');
+      const next = normalizeState(deep(b.state));
+      // 原地替换：state 被大量闭包共享，不能换引用
+      for (const k of Object.keys(state)) delete state[k];
+      Object.assign(state, next);
+      turns.length = 0;
+      if (Array.isArray(b.turns)) turns.push(...b.turns);
+      currentSaveId = id;
+      renderStream(); renderHUD(); renderSidebar();
+      SAVE.log = `已读取 ${id}`;
+    } catch (e) {
+      SAVE.log = '读档失败：' + ((e && e.message) || e);
+      renderSidebar();
+    }
+  }
+
+  async function deleteSave(id) {
+    try {
+      await store.remove(id);
+      SAVE.log = `已删除 ${id}`;
+    } catch (e) {
+      SAVE.log = '删除失败：' + ((e && e.message) || e);
+    }
+    await refreshSaves();
+    renderSidebar();
+  }
+
+  async function exportSave() {
+    try {
+      await saveNow(true);
+      const json = await store.exportBundle(currentSaveId);
+      const blob = new Blob([json], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${currentSaveId}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      SAVE.log = '已导出存档包（可在任意端导入）';
+    } catch (e) {
+      SAVE.log = '导出失败：' + ((e && e.message) || e);
+    }
+    renderSidebar();
+  }
+
+  async function importSaveFile(file) {
+    try {
+      const text = await file.text();
+      const meta = await store.importBundle(text);
+      SAVE.log = `已导入为 ${meta.id}（不会覆盖已有存档）`;
+    } catch (e) {
+      SAVE.log = '导入失败：' + ((e && e.message) || e);
+    }
+    await refreshSaves();
+    renderSidebar();
+  }
+
+  async function freeText(text, kind = 'free') {
+    turns.push({ role: 'user', text });
+    appendTurn(turns[turns.length - 1]);
+    renderHUD();
+    return runEngineTurn({ kind, text });
   }
   function cultivate() {
-    const P = state.主角;
-    const gain = 16; // 黄品·炼气期
-    turns.push({ role: 'user', text: '寻一处僻静，闭关修炼。' });
+    // 修为增量、耗时天数全部由引擎算（engine/rules.js 的灵根品阶表）
+    return freeText('寻一处僻静，闭关修炼。', 'cultivate');
+  }
+
+  async function breakthrough() {
+    const text = '冲击瓶颈，尝试突破。';
+    turns.push({ role: 'user', text });
     appendTurn(turns[turns.length - 1]);
-    state.世界.当前时间 = '七日后 · 午后';
-    tickCooldown();
-    const t = {
-      role: 'assistant',
-      text: `你在后山寻了处背风的洞穴，盘膝坐下。\n\n灵气如溪，一丝丝渗入经脉。七日里你只醒来两次，吃了半块干粮。丹田中那点火气，总算比先前凝实了些许。\n\n出关时，衣上结了薄薄的霜。`,
-      effects: [{ op: 'delta', target: '主角.修为', value: gain, reason: '闭关修炼' }, { op: 'delta', target: '主角.灵力', value: 18, reason: '打坐回复' }, { op: 'delta', target: '主角.生命', value: -3, reason: '久坐少食' }],
-      choices: ['继续闭关', '出山透透气', '检视修为进度'],
-    };
-    applyEffects(t.effects);
-    turns.push(t); setTimeout(() => { typeAssistant(t); renderHUD(); }, 300);
+    renderHUD();
+    return runEngineTurn({ kind: 'breakthrough', text }, { holdForJudge: true });
   }
   function sendFree() {
     const el = $('#free-input'); const v = el.value.trim(); if (!v) return; el.value = '';
     freeText(v);
   }
 
-  /* ================= 效果落地 ================= */
-  function resolve(path) {
-    const parts = path.split('.'); let o = state;
-    for (let i = 0; i < parts.length - 1; i++) { if (o[parts[i]] == null) o[parts[i]] = {}; o = o[parts[i]]; }
-    return { obj: o, key: parts[parts.length - 1] };
-  }
+  /* ================= 效果落地（全部交给引擎） ================= */
+  /** 落地 effect 并把引擎事件翻译成界面动画。 */
   function applyEffects(effects) {
-    (effects || []).forEach((e) => {
-      const { obj, key } = resolve(e.target);
-      if (e.op === 'delta') {
-        const cur = Number(obj[key]) || 0;
-        const max = key === '遭遇冷却' ? 15 : 100;
-        obj[key] = clamp(cur + e.value, key === '遭遇冷却' ? 0 : 0, max);
-        if (D.RES.some((r) => r.key === key)) float(key, e.value, D.RES.find((r) => r.key === key).color);
-      } else if (e.op === 'set') obj[key] = e.value;
-      else if (e.op === 'add' || e.op === 'remove') { /* 原型从简 */ }
-    });
+    const r = applyAll(state, effects || []);
+    for (const ev of r.events || []) {
+      if (ev.kind === 'float' && ev.key) {
+        const meta = D.RES.find((x) => x.key === ev.key);
+        float(ev.key, ev.delta, meta ? meta.color : '#d4af37');
+      } else if (ev.kind === 'realm') {
+        float('修为', 0, '#d4af37');
+      }
+    }
+    if (r.logs.length) {
+      console.warn('[engine] 跳过', r.logs.length, '条无效效果：', r.logs);
+    }
+    return r;
   }
   function float(key, v, color) {
     const bar = $(`[data-res="${key}"]`);
@@ -412,34 +616,44 @@
   }
 
   /* ================= 判定演出 ================= */
-  function judge() {
+  /**
+   * 判定覆盖层。**面板上的数字没有一个来自模型** —— 全部由 engine/turn.js 掷骰得出，
+   * 模型只负责把成败的过程演得合理。
+   * @param {{win:boolean, chance:number, diff:number, tier?:{desc:string}, opponentName?:string}} duel
+   * @param {Function} onAck 玩家点「承认结果」后的回调
+   */
+  function showJudge(duel, onAck) {
     const P = state.主角;
-    const enemy = { nm: '后山 · 未知尸傀', dc: P.境界DC + 6 };
-    const diff = enemy.dc - P.境界DC;
-    const tier = D.DC_TIERS.find((t) => diff <= t.max);
-    // 引擎掷骰：按 DC 差给压制系数
-    const bonus = clamp(50 - diff * 3 + (P.道心 - 50) * 0.3 + P.灵力 * 0.2, 5, 92);
-    const win = rnd(100) < bonus;
+    const diff = Number(duel.diff ?? 0);
+    const tier = duel.tier || D.DC_TIERS.find((t) => Math.abs(diff) <= t.max) || { desc: '' };
+    const chance = Number(duel.chance ?? 0.5);
+    const win = !!duel.win;
+    const aDc = P.境界DC;
+    const bDc = aDc + diff;
     const box = $('#judge-box');
     box.innerHTML = `
       <h3>道 争 · 判 定</h3>
       <div class="duel">
-        <div class="side"><div class="nm">${esc(P.姓名)}</div><div class="dc">${P.境界DC}</div><div class="nm" style="color:var(--dim)">${esc(P.境界)}</div></div>
+        <div class="side"><div class="nm">${esc(P.姓名)}</div><div class="dc">${aDc}</div>
+          <div class="nm" style="color:var(--dim)">${esc(P.境界)}</div></div>
         <div class="vs">对 拼</div>
-        <div class="side"><div class="nm">${esc(enemy.nm)}</div><div class="dc" style="color:var(--bad)">${enemy.dc}</div><div class="nm" style="color:var(--dim)">境界差 ${diff > 0 ? '+' + diff : diff}</div></div>
+        <div class="side"><div class="nm">${esc(duel.opponentName || '瓶颈')}</div>
+          <div class="dc" style="color:var(--bad)">${bDc}</div>
+          <div class="nm" style="color:var(--dim)">境界差 ${diff > 0 ? '+' + diff : diff}</div></div>
       </div>
-      <div class="verdict ${win ? 'win' : 'lose'}">${win ? '胜' : '败'}</div>
+      <div class="verdict ${win ? 'win' : 'lose'}">${win ? '成' : '败'}</div>
       <div class="tier">${esc(tier.desc)}</div>
-      <div class="desc">引擎掷骰：胜率 ${bonus.toFixed(0)}%（道心 ${P.道心} · 灵力 ${P.灵力} · 境界差 ${diff}）<br>—— 判定由本地引擎给出，模型只负责把这一战演得合理。</div>
+      <div class="desc">引擎掷骰：成功率 ${(chance * 100).toFixed(0)}%（道心 ${P.道心} · 灵力 ${P.灵力} · 境界差 ${diff}）<br>
+        —— 判定由本地引擎给出，模型只负责把这一场演得合理。</div>
       <button class="btn primary" id="judge-ok">承 认 结 果</button>`;
     $('#judge').classList.add('open');
-    $('#judge-ok').addEventListener('click', () => {
+    const ok = $('#judge-ok');
+    const handler = () => {
       $('#judge').classList.remove('open');
-      const t = win
-        ? { role: 'assistant', text: '剑光起时，那具尸傀的关节发出令人牙酸的错位声。你抓住那一线破绽，青纹剑贯入它的眉心。\n\n它僵立片刻，颓然倒地。', effects: [{ op: 'delta', target: '主角.修为', value: 6, reason: '斗法所得' }, { op: 'delta', target: '主角.生命', value: -8, reason: '被尸气擦伤' }], choices: ['搜检尸身', '立刻离开', '查看伤势'] }
-        : { role: 'assistant', text: '你终究慢了半步。尸气如针，刺入左肩，半边身子瞬间麻了。\n\n你咬破舌尖，借一丝血气催动灵力，狼狈地退出了它的攻击范围。', effects: [{ op: 'delta', target: '主角.生命', value: -18, reason: '尸气入体' }, { op: 'delta', target: '主角.灵力', value: -12, reason: '强行催动' }], choices: ['服下疗伤散', '遁走', '拼死再战'] };
-      applyEffects(t.effects); turns.push(t); typeAssistant(t); renderHUD();
-    });
+      ok.removeEventListener('click', handler);
+      if (typeof onAck === 'function') onAck();
+    };
+    ok.addEventListener('click', handler);
   }
 
   /* ================= 检查更新 ================= */
@@ -507,71 +721,12 @@
     }
   }
 
-  /** 本回合的状态摘要（对应主方案 L3 层：只给摘要，不给全量 JSON）。 */
-  function stateSummary() {
-    const P = state.主角, W = state.世界;
-    const who = Object.entries(state.人物)
-      .map(([k, v]) => `${k}（好感${v.好感}·${v.关系阶段}）`).join('；') || '无';
-    return [
-      `${P.姓名} · ${P.境界}（DC:${P.境界DC}） · ${P.宗门} · ${P.所在界}`,
-      `时间：${W.当前时间}｜地点：${W.当前地点}｜天气：${W.天气}｜危机：${W.危机程度}`,
-      `生命${P.生命} 精血${P.精血} 灵力${P.灵力} 修为${P.修为} 神识${P.神识} 道心${P.道心}（${D.DAO_STAGE(P.道心)}）`,
-      `灵根：${P.灵根}｜状态：${P.状态}｜气运：${Object.keys(P.气运).join('、') || '无'}`,
-      `在场人物：${who}`,
-    ].join('\n');
-  }
-
-  const SYS_PROMPT = [
-    '你是《道渊》的叙事引擎。只输出剧情正文。',
-    '禁止输出 JSON、HTML、状态栏、变量块或任何系统说明。',
-    '境界与数值由本地引擎裁定，你不计算、不修改数值；不替玩家做决定；不描写玩家未选择的行为。',
-    '文风：玄天界修仙，第三人称限知视角，中文，冷静克制，重细节与留白。每段 150–400 字。',
-  ].join('\n');
-
-  function buildMessages(userText) {
-    const recent = turns.slice(-6).map((t) => ({
-      role: t.role === 'user' ? 'user' : 'assistant',
-      content: t.text,
-    }));
-    return [
-      { role: 'system', content: SYS_PROMPT },
-      { role: 'system', content: '【当前状态】\n' + stateSummary() },
-      ...recent,
-      { role: 'user', content: userText },
-    ];
-  }
-
   function newAssistantBubble() {
     const wrap = document.createElement('div');
     wrap.className = 'msg assistant';
     wrap.innerHTML = '<div class="who">道渊</div><div class="bubble typing"></div>';
     $('#stream').appendChild(wrap);
     return { wrap, bubble: $('.bubble', wrap) };
-  }
-
-  /** 真·调用大模型；返回是否成功。失败由调用方回退到离线示例文本。 */
-  async function narrateWithLlm(userText) {
-    const { bubble } = newAssistantBubble();
-    const requestId = 'req-' + Date.now() + '-' + rnd(9999);
-    let full = '', err = null;
-    try {
-      await window.DYApp.llm.stream(
-        { requestId, messages: buildMessages(userText), stream: true, jsonMode: false },
-        (ev) => {
-          if (ev.type === 'delta') { full += ev.data.text; bubble.textContent = full; scrollStream(); }
-          else if (ev.type === 'reasoning') { /* 思维链不展示，按卡设定"不输出思考" */ }
-          else if (ev.type === 'error') { err = new Error(ev.data && ev.data.message || '流式出错'); }
-        });
-    } catch (e) { err = e; }
-    bubble.classList.remove('typing');
-    if (err) {
-      bubble.textContent = '调用模型失败：' + (err.message || err);
-      turns.push({ role: 'system', text: bubble.textContent });
-      return false;
-    }
-    if (!full.trim()) { bubble.textContent = '（模型没有返回内容）'; return false; }
-    turns.push({ role: 'assistant', text: full, choices: ['继续', '观察四周', '打坐调息'] });
-    return true;
   }
 
   /* ================= 多端进度同步（能力由壳提供） ================= */
@@ -626,6 +781,13 @@
     if (ws) ws.addEventListener('input', () => { $('#wiki-list').innerHTML = wikiList(ws.value.trim()); });
     // 设置开关（排除需要独立持久化的更新开关）
     $$('#sb-body .switch:not(#upd-auto)').forEach((s) => s.addEventListener('click', () => s.classList.toggle('on')));
+    // 「神视模式」：只影响显示，不影响任何计算
+    $$('#sb-body .switch[data-set]').forEach((sw) => sw.addEventListener('click', () => {
+      if (sw.dataset.set === '神视模式') {
+        showExact = sw.classList.contains('on');
+        renderHUD();
+      }
+    }));
     // 检查更新
     const ub = $('#upd-btn');
     if (ub) ub.addEventListener('click', async () => {
@@ -639,6 +801,21 @@
       ua.classList.toggle('on', on);
       window.DYUpdate.setAuto(on);
     });
+
+    /* ---------- 存档面板 ---------- */
+    if ($('#sv-save')) {
+      $('#sv-save').addEventListener('click', () => saveNow(false));
+      $('#sv-export').addEventListener('click', exportSave);
+      $('#sv-import').addEventListener('click', () => $('#sv-file').click());
+      $('#sv-file').addEventListener('change', async (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (f) await importSaveFile(f);
+      });
+      $$('#sb-body [data-sv-load]').forEach((b) => b.addEventListener('click', () => loadSave(b.dataset.svLoad)));
+      $$('#sb-body [data-sv-del]').forEach((b) => b.addEventListener('click', () => {
+        if (confirm(`删除存档「${b.dataset.svDel}」？此操作不可恢复。`)) deleteSave(b.dataset.svDel);
+      }));
+    }
 
     /* ---------- 模型配置面板 ---------- */
     if ($('#cfg-save')) {
@@ -941,10 +1118,38 @@
           ${r.on ? '<span class="chip gold">所在</span>' : r.lock ? '' : '<span class="chip">可前往</span>'}</div>`).join('')}</div>`;
     }
     if (id === '图鉴') {
-      return `<div class="cr-hint">内置百科 · 源自 319 条世界书。正文中出现的名词皆可点击查阅。</div>
+      const total = WORLDBOOK ? WORLDBOOK.entries.length : D.WORLD.length;
+      return `<div class="cr-hint">内置百科 · 源自 ${total} 条世界书${WORLDBOOK ? '' : '（当前为内置样例，世界书未加载）'}。与叙事检索同一套分词，命中口径一致。</div>
         <div class="field"><input id="wiki-search" placeholder="搜索术语 / 人物 / 势力 / 地点……"></div>
         <div id="wiki-list">${wikiList('')}</div>`;
     }
+    if (id === '存档') {
+      const fmt = (t) => (t ? new Date(t).toLocaleString('zh-CN') : '—');
+      const backendNote = store.persistent
+        ? '存档写在应用私有目录，可被「同步」面板推送到 GitHub 实现多端互通。'
+        : '当前是浏览器预览：存档只在本机 localStorage，换浏览器或清缓存就没了。装进客户端后才会落到应用私有目录。';
+      return `
+        <div class="cr-hint">${backendNote}</div>
+        <div class="card" style="margin-bottom:12px">
+          <div class="kv"><span class="k">当前档</span><span class="v">${esc(currentSaveId)}</span></div>
+          <div class="kv"><span class="k">后端</span><span class="v">${esc(store.backend)}${store.persistent ? ' · 持久' : ' · 临时'}</span></div>
+          <div class="kv"><span class="k">进度</span><span class="v">第 ${state.世界.天数} 日 · ${esc(state.世界.当前地点)} · ${turns.length} 条记录</span></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" id="sv-save">保 存</button>
+          <button class="btn" id="sv-export">导出</button>
+          <button class="btn" id="sv-import">导入</button>
+        </div>
+        <input type="file" id="sv-file" accept="application/json,.json" style="display:none">
+        <div class="sect-title">存 档 列 表 <span class="n">${SAVE.list.length}</span></div>
+        ${SAVE.list.length ? SAVE.list.map((m) => `<div class="set-row">
+            <div class="lbl">${esc(m.name || m.id)}<div class="d">${esc(m.summary || '')} · ${fmt(m.updatedAt)}</div></div>
+            <button class="btn" data-sv-load="${esc(m.id)}" style="flex:none;min-width:58px;padding:8px 10px">读取</button>
+            <button class="btn" data-sv-del="${esc(m.id)}" style="flex:none;min-width:58px;padding:8px 10px">删除</button>
+          </div>`).join('') : '<div class="cr-hint">本机暂无存档。点「保存」创建第一个。</div>'}
+        ${SAVE.log ? `<div class="upd-notes" style="margin-top:12px">${esc(SAVE.log)}</div>` : ''}`;
+    }
+
     if (id === '模型') {
       const s = LLM.settings || {
         provider: { id: 'openai', baseUrl: 'https://api.openai.com/v1', endpointPath: '/chat/completions' },
@@ -1026,9 +1231,9 @@
         <div class="card" style="margin:12px 0">
           <div class="kv"><span class="k">叙事模型</span><span class="v">gpt-4o · 强档（用户自带 Key）</span></div>
           <div class="kv"><span class="k">裁决模型</span><span class="v">gpt-4o-mini · 快档（效果抽取）</span></div>
-          <div class="kv"><span class="k">存档</span><span class="v">save-01 · 已游历 3 小时 · 12 回合</span></div>
+          <div class="kv"><span class="k">存档</span><span class="v">${esc(currentSaveId)} · 第 ${state.世界.天数} 日 · ${turns.length} 条记录 · ${esc(store.backend)}${store.persistent ? '' : '（临时）'}</span></div>
         </div>
-        ${rows.map(([t, d, on]) => `<div class="set-row"><div class="lbl">${esc(t)}<div class="d">${esc(d)}</div></div><div class="switch ${on ? 'on' : ''}"></div></div>`).join('')}
+        ${rows.map(([t, d, on]) => `<div class="set-row"><div class="lbl">${esc(t)}<div class="d">${esc(d)}</div></div><div class="switch ${on ? 'on' : ''}" data-set="${esc(t)}"></div></div>`).join('')}
         ${updateSectionHTML()}
         <div class="sect-title">安 卓 适 配</div>
         <div class="card"><div class="kv"><span class="k">当前版式</span><span class="v">${isTablet() ? '平板（左导航 + 中叙事 + 右状态）' : '手机（单栏 + 抽屉）'}</span></div>
@@ -1038,12 +1243,60 @@
     }
     return '';
   }
+  /** 图鉴数据源：优先真实世界书（319 条），否则退回内置样例。 */
+  function wikiEntries() {
+    if (WORLDBOOK && Array.isArray(WORLDBOOK.entries) && WORLDBOOK.entries.length) {
+      return WORLDBOOK.entries.map((e) => ({
+        title: e.title, name: e.name, category: e.category, realm: e.realm,
+        keys: e.keys || [], content: e.content, constant: e.constant,
+      }));
+    }
+    return D.WORLD.map((w) => ({
+      title: w.t, name: w.t, category: w.c, realm: '', keys: w.k || [], content: w.s, constant: false,
+    }));
+  }
+
+  /** 图鉴搜索：与检索层同样的分词口径，命中判断一致，便于对照排查。 */
+  function wikiSearch(entries, q) {
+    const query = String(q || '').trim();
+    if (!query) {
+      // 默认先给可检索条目，常驻规则压在后面
+      return [...entries].sort((a, b) => Number(a.constant) - Number(b.constant)).slice(0, 40);
+    }
+    const qt = new Set(tokenize(query));
+    const scored = [];
+    for (const e of entries) {
+      let s = 0;
+      if (e.title.includes(query)) s += 100;
+      if ((e.name || '').includes(query)) s += 80;
+      if ((e.keys || []).some((k) => k.includes(query))) s += 60;
+      if ((e.content || '').includes(query)) s += 20;
+      if (!s) {
+        const et = new Set(tokenize(`${e.title} ${e.name}`));
+        let hit = 0;
+        for (const t of qt) if (et.has(t)) hit++;
+        s = hit * 4;
+      }
+      if (s > 0) scored.push({ e, s });
+    }
+    scored.sort((a, b) => b.s - a.s);
+    return scored.slice(0, 40).map((x) => x.e);
+  }
+
   function wikiList(q) {
-    const list = D.WORLD.filter((w) => !q || w.t.includes(q) || w.s.includes(q) || w.k.some((k) => k.includes(q)));
+    const entries = wikiEntries();
+    const list = wikiSearch(entries, q);
     if (!list.length) return `<div class="cr-hint">未找到「${esc(q)}」相关条目。</div>`;
-    return list.map((w) => `<div class="wiki-item"><div class="h"><span class="t">${esc(w.t)}</span><span class="chip purple">${esc(w.c)}</span></div>
-      <div class="s">${esc(w.s)}</div>
-      <div style="margin-top:8px">${w.k.map((k) => `<span class="chip" style="margin:2px 4px 0 0">#${esc(k)}</span>`).join('')}</div></div>`).join('');
+    return list.map((w) => `<div class="wiki-item">
+        <div class="h"><span class="t">${esc(w.title)}</span>
+          <span class="chip purple">${esc(w.category)}</span>
+          ${w.constant ? '<span class="chip gold">常驻</span>' : ''}
+          ${w.realm ? `<span class="chip">${esc(w.realm)}</span>` : ''}</div>
+        <div class="s">${esc(w.content.slice(0, 160))}${w.content.length > 160 ? '…' : ''}</div>
+        ${w.content.length > 160 ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--gold);font-size:.8rem">展开全文（${w.content.length} 字）</summary>
+          <div class="s" style="white-space:pre-wrap">${esc(w.content)}</div></details>` : ''}
+        ${w.keys.length ? `<div style="margin-top:8px">${w.keys.slice(0, 8).map((k) => `<span class="chip" style="margin:2px 4px 0 0">#${esc(k)}</span>`).join('')}</div>` : ''}
+      </div>`).join('');
   }
   function sendChat(text) {
     const v = (text || '').trim(); if (!v) return;
@@ -1064,6 +1317,17 @@
   renderStream(); renderHUD(); renderActions(); renderSidebar();
   showScreen('s-boot');
   renderUpdateChip();
+
+  // 世界书（319 条）异步加载：就绪后重建索引，并刷新图鉴面板
+  loadWorldbook().then((wb) => {
+    if (wb) {
+      console.info(`[worldbook] 已载入 ${wb.count} 条，可检索 ${WORLD_INDEX.stats.searchable} 条 / 常驻 ${WORLD_INDEX.stats.constant} 条`);
+      if (curPanel === '图鉴') renderSidebar();
+    }
+  });
+
+  // 存档列表
+  refreshSaves().then(() => { if (curPanel === '存档') renderSidebar(); });
 
   // 壳能力探测：在 Tauri 里读本地模型配置与同步配置；浏览器里保持降级
   refreshLlm();

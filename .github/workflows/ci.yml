@@ -14,12 +14,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 原型 JS 语法检查
+      - name: 界面与内核 JS 语法检查
         run: |
-          for f in prototype/*.js; do
+          while IFS= read -r f; do
             echo "check $f"
             node --check "$f"
-          done
+          done < <(find prototype -name '*.js' -not -path '*/node_modules/*' | sort)
 
       - name: 版本号单一真源校验（VERSION 与 update.js 必须一致）
         run: |

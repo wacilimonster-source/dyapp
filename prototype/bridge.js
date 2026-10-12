@@ -50,6 +50,16 @@ window.DYApp = (function () {
     completeJson: (req) => call('llm_complete_json', { req }),
   };
 
+  /* ---------------- 存档 ---------------- */
+  const save = {
+    list: () => call('save_list'),
+    read: (saveId) => call('save_read', { saveId }),
+    write: (saveId, bundle) => call('save_write', { saveId, bundle }),
+    remove: (saveId) => call('save_delete', { saveId }),
+    exportBundle: (saveId) => call('save_export', { saveId }),
+    importBundle: (bundleJson) => call('save_import', { bundleJson }),
+  };
+
   /* ---------------- 多端进度同步（GitHub） ---------------- */
   const sync = {
     getConfig: () => call('sync_config_get'),
@@ -63,5 +73,5 @@ window.DYApp = (function () {
     pushAll: () => call('sync_push_all'),
   };
 
-  return { available, llm, sync, platform: tauri ? 'tauri' : 'web' };
+  return { available, llm, sync, save, platform: tauri ? 'tauri' : 'web' };
 })();

@@ -54,7 +54,19 @@ export function resolveIntent(action, state, rng) {
     else effects.push({ op: 'delta', target: '主角.生命', value: -12, reason: '突破失败反噬' });
     advanceTime(state.世界, 3);
     hints.push(`时间推进到：${state.世界.当前时间}。`);
-    return { hints, effects, days: 3, preEffects: true, duel: { win, chance: p } };
+    return {
+      hints,
+      effects,
+      days: 3,
+      preEffects: true,
+      duel: {
+        win,
+        chance: p,
+        diff: 0,
+        tier: { desc: '突破瓶颈：成功则晋阶，失败则受反噬' },
+        opponentName: '瓶颈',
+      },
+    };
   }
 
   advanceTime(state.世界, 0);
@@ -143,7 +155,7 @@ export async function runTurn(input) {
     if (streamed.error) logs.push(`叙事降级：${streamed.error}`);
   }
 
-  // 裁决：拿 effects
+  // 裁决：拿 effects。优先用裁决模型（更便宜），没配就退回叙事模型。
   let effects = [];
   let scene = {};
   let choices = [];
@@ -157,7 +169,8 @@ export async function runTurn(input) {
       retrieved,
       scene: { 当前时间: state.世界.当前时间, 当前地点: state.世界.当前地点, 危机程度: state.世界.危机程度 },
     });
-    const d = await decide(llm, arb, {});
+    let d = await decide(llm, arb, { useArbiter: !!input.arbiterConfigured });
+    if (!d.ok && input.arbiterConfigured) d = await decide(llm, arb, { useArbiter: false });
     if (d.ok) {
       const parsed = parseTurnResult(d.raw);
       effects = parsed.effects;

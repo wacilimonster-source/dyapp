@@ -86,6 +86,8 @@
 <script src="data.js"></script>
 <script src="update.js"></script>
 <script src="bridge.js"></script>
-<script src="app.js"></script>
+<!-- app.js 是 ES 模块：它 import engine/ memory/ narrator/ store/ 这些纯逻辑模块。
+     模块是 defer 的，所以上面的传统脚本会先执行完，window.DY / DYApp / DYUpdate 都已就位。 -->
+<script type="module" src="app.js"></script>
 </body>
 </html>

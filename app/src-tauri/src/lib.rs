@@ -1,6 +1,7 @@
 mod error;
 mod llm;
 mod paths;
+mod save;
 mod secrets;
 mod sync;
 
@@ -25,6 +26,13 @@ pub fn run() {
             llm::llm_models,
             llm::llm_chat_stream,
             llm::llm_complete_json,
+            // 存档
+            save::save_list,
+            save::save_read,
+            save::save_write,
+            save::save_delete,
+            save::save_export,
+            save::save_import,
             // 多端进度同步（GitHub）
             sync::sync_config_get,
             sync::sync_config_set,
