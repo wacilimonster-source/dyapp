@@ -282,9 +282,15 @@ fn local_save_ids(app: &AppHandle) -> AppResult<Vec<String>> {
     let mut ids = Vec::new();
     for entry in std::fs::read_dir(saves_dir(app)?)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            ids.push(entry.file_name().to_string_lossy().to_string());
+        if !entry.file_type()?.is_dir() {
+            continue;
         }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // 写入中（.tmp-writing）/ 换盘中（.old-backup）的残骸不是存档，别列也别推
+        if !crate::save::is_save_dir_name(&name) {
+            continue;
+        }
+        ids.push(name);
     }
     ids.sort();
     Ok(ids)
@@ -408,6 +414,37 @@ pub async fn sync_push(
         }
     }
 
+    // force 会覆盖远端：先把远端那一版取下来存到本地。
+    // 与 sync_pull 覆盖本机前会备份对称 —— 否则强制推送会让另一台设备的进度无声消失
+    // （远端是 git，历史可回滚，但用户得知道去哪儿找；存在存档目录里就找得到）。
+    let mut remote_backup: Option<PathBuf> = None;
+    if force {
+        for name in SAVE_FILES {
+            let Some(existing) = remote.iter().find(|e| e.name == name && !e.is_dir) else {
+                continue;
+            };
+            let path = dir.join(name);
+            if !path.exists() {
+                continue;
+            }
+            if git_blob_sha(&std::fs::read(&path)?) == existing.sha {
+                continue; // 内容一致，不会覆盖掉任何东西
+            }
+            if let Some((bytes, _)) =
+                get_file(&token, &cfg, &format!("{}/{}", remote_dir, name)).await?
+            {
+                let bdir = remote_backup.get_or_insert_with(|| {
+                    dir.join(format!(
+                        "remote-backup-{}",
+                        chrono::Local::now().format("%Y%m%d-%H%M%S")
+                    ))
+                });
+                crate::paths::ensure_dir(bdir)?;
+                write_atomic(&bdir.join(name), &bytes)?;
+            }
+        }
+    }
+
     let mut uploaded = Vec::new();
     for name in SAVE_FILES {
         let path = dir.join(name);
@@ -439,7 +476,12 @@ pub async fn sync_push(
         uploaded.push(name.to_string());
     }
 
-    Ok(json!({ "saveId": id, "uploaded": uploaded }))
+    Ok(json!({
+        "saveId": id,
+        "uploaded": uploaded,
+        "remoteBackup": remote_backup
+            .map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+    }))
 }
 
 /// 拉取一个存档：远端更新才覆盖；覆盖前把本地副本另存为 `.conflict-<时间戳>`。
@@ -532,11 +574,12 @@ pub async fn sync_push_all(
 ) -> AppResult<Value> {
     let ids = local_save_ids(&app)?;
     let mut report = Vec::new();
+    // 配置与令牌在整批里不变，提到循环外（原先每轮都取一次快照）
+    let cfg = sync.snapshot();
+    let token = secrets.snapshot().sync_token;
     for id in ids {
         // 逐个走同步逻辑，单个失败不影响其余。
         // 原先这里的 `?` 会让任意一档读失败直接终止整批（注释说的和做的不一样）。
-        let cfg = sync.snapshot();
-        let token = secrets.snapshot().sync_token;
         if let Err(e) = require(&token, &cfg.repo) {
             report.push(json!({ "id": id, "uploaded": [], "error": e.to_string() }));
             continue;

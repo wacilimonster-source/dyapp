@@ -90,7 +90,12 @@ function buildPresetPlan({ preset, engine, names, rng }) {
         if (!engine.index) return null;
         const L1 = constantText(engine.index, { maxChars: Math.round(LAYER_BUDGET.L1 * 1.6) });
         if (!L1.text) return null;
-        layers.push({ name: 'L1 世界法则', tokens: estimateTokens(L1.text), items: L1.included });
+        layers.push({
+          name: 'L1 世界法则',
+          tokens: estimateTokens(L1.text),
+          items: L1.included,
+          truncated: L1.truncated,
+        });
         return [{ role: 'system', content: `【世界法则 · 常驻】\n${L1.text}` }];
       }
       case 'worldInfoAfter': {

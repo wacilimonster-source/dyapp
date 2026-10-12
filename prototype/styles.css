@@ -190,9 +190,6 @@ button { background: none; border: 0; cursor: pointer; }
 .fx-chip { font-size: 0.72rem; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
 .fx-chip.up { color: var(--ok); border-color: rgba(111, 212, 154, 0.4); }
 .fx-chip.down { color: var(--bad); border-color: rgba(255, 122, 107, 0.5); }
-.choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.choice { font-size: 0.82rem; padding: 8px 13px; min-height: 38px; border: 1px dashed rgba(212, 175, 55, 0.4); border-radius: 999px; color: var(--gold); background: rgba(212, 175, 55, 0.05); }
-.choice:active { transform: scale(0.97); }
 .typing::after { content: '▍'; color: var(--gold); animation: blink 0.9s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 

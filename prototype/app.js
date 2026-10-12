@@ -1134,6 +1134,11 @@ import { retrieve } from './memory/retrieve.js';
       `<div class="kv"><span class="k">[${i + 1}] ${esc(m.role)}</span><span class="v">${esc(m.content.length > 200 ? m.content.slice(0, 200) + '…' : m.content)}</span></div>`).join('');
     const layers = (plan.meta.layers || []).map((l) => `${esc(l.name)}:${l.tokens == null ? '?' : l.tokens}`).join('　');
     const warns = plan.warnings || [];
+    // 常驻法则被截断的条目：写进告警栏，不然用户看不出"少了一截"
+    const cut = (plan.meta.layers || [])
+      .filter((l) => (l.truncated || []).length)
+      .flatMap((l) => l.truncated);
+    if (cut.length) warns.push(`以下常驻条目超出预算被截断（保留开头）：${cut.join('、')}`);
     $('#judge-box').innerHTML = `<h3>将 发 送 的 提 示 词</h3>
       <div class="cr-hint" style="text-align:left">${plan.meta.mode === 'preset' ? '预设「' + esc(plan.meta.presetName || '') + '」' : '默认对话'} · 共 ${plan.messages.length} 条 · 约 ${plan.meta.totalTokens} tok</div>
       <div style="max-height:46vh;overflow:auto;text-align:left;margin:10px 0">${rows}</div>
@@ -1414,8 +1419,11 @@ import { retrieve } from './memory/retrieve.js';
         } catch (e) {
           // 远端更新 → 询问是否强制
           if (confirm(String((e && e.message) || e) + '\n\n要改为强制推送（覆盖远端）吗？')) {
-            try { const r2 = await window.DYApp.sync.push(id, true); SYNC.log = `${id}：已强制推送（${(r2.uploaded || []).join('、') || '无变化'}）`; }
-            catch (e2) { SYNC.log = '强制推送失败：' + ((e2 && e2.message) || e2); }
+            try {
+              const r2 = await window.DYApp.sync.push(id, true);
+              SYNC.log = `${id}：已强制推送（${(r2.uploaded || []).join('、') || '无变化'}）`
+                + (r2.remoteBackup ? `\n覆盖前的远端副本已备份到存档目录内的 ${r2.remoteBackup}/` : '');
+            } catch (e2) { SYNC.log = '强制推送失败：' + ((e2 && e2.message) || e2); }
           } else { SYNC.log = '已取消。'; }
         }
         renderSidebar();

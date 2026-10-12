@@ -31,11 +31,20 @@ pub fn saves_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(dir)
 }
 
+/// 写路径：需要时创建目录。
 pub fn save_dir(app: &AppHandle, save_id: &str) -> AppResult<PathBuf> {
     let safe = sanitize_id(save_id);
     let dir = saves_dir(app)?.join(&safe);
     ensure_dir(&dir)?;
     Ok(dir)
+}
+
+/// 读路径：**不创建目录**。
+///
+/// 原先读操作也走 `save_dir`，于是"读一个不存在的 id"会顺手造出一个空目录，
+/// 而空目录又会被"本地存档列表"列出来（还会被批量推送尝试上传）。
+pub fn save_dir_existing(app: &AppHandle, save_id: &str) -> AppResult<PathBuf> {
+    Ok(saves_dir(app)?.join(sanitize_id(save_id)))
 }
 
 #[cfg(test)]

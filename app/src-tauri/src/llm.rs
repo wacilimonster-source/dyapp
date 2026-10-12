@@ -288,24 +288,31 @@ fn client(timeout_secs: u64) -> AppResult<reqwest::Client> {
         .map_err(AppError::from)
 }
 
-fn headers(provider: &ProviderConfig, api_key: &str) -> reqwest::header::HeaderMap {
+/// 组装请求头。
+///
+/// **失败必须报错，不能静默跳过**：原先 Authorization 构造失败（例如粘贴的 Key 里
+/// 混进了换行或控制字符）时会不发鉴权头就把请求送出去，用户看到的是一句莫名的 401，
+/// 完全想不到是"Key 里有个不可见字符"。
+fn headers(provider: &ProviderConfig, api_key: &str) -> AppResult<reqwest::header::HeaderMap> {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
     let mut map = HeaderMap::new();
     map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
     if provider.requires_api_key && !api_key.is_empty() {
-        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", api_key.trim())) {
-            map.insert(AUTHORIZATION, v);
-        }
+        let value = HeaderValue::from_str(&format!("Bearer {}", api_key.trim())).map_err(|_| {
+            AppError::Data("API Key 含非法字符（换行或控制符），请回设置里重新粘贴一次".into())
+        })?;
+        map.insert(AUTHORIZATION, value);
     }
+
     for (k, v) in &provider.default_headers {
-        if let (Ok(name), Ok(value)) = (
-            HeaderName::from_bytes(k.as_bytes()),
-            HeaderValue::from_str(v),
-        ) {
-            map.insert(name, value);
-        }
+        let name = HeaderName::from_bytes(k.as_bytes())
+            .map_err(|_| AppError::Data(format!("附加请求头的名称非法：{k}")))?;
+        let value = HeaderValue::from_str(v)
+            .map_err(|_| AppError::Data(format!("附加请求头「{k}」的值含非法字符")))?;
+        map.insert(name, value);
     }
-    map
+    Ok(map)
 }
 
 fn build_body(slot: &ModelSlot, messages: &[ChatMessage], stream: bool, json_mode: bool) -> Value {
@@ -350,7 +357,17 @@ fn build_body(slot: &ModelSlot, messages: &[ChatMessage], stream: bool, json_mod
 }
 
 /// 挑出本次调用要用的槽位。
+///
+/// **优先级（对外契约，写明以免误用）**：
+/// 1. `overrides` 若给出，它就是基础槽位（连 `model` 一起接管，可整体换模型）；
+/// 2. 否则按 `use_arbiter` 选 裁决模型 / 叙事模型；
+/// 3. 最后 `sampling` 在基础槽位上覆盖采样参数（temperature / top_p / max_tokens / 罚项 / seed）。
+///
+/// 一句话：**overrides 决定"用哪个模型"，sampling 决定"怎么采样"**。
 fn pick_slot(settings: &LlmSettings, req: &ChatRequest) -> AppResult<(ProviderConfig, ModelSlot)> {
+    if req.overrides.is_some() && req.use_arbiter {
+        eprintln!("[llm] overrides 与 use_arbiter 同时给出：以 overrides 为准，use_arbiter 被忽略");
+    }
     let slot = if let Some(o) = &req.overrides {
         o.clone()
     } else if req.use_arbiter {
@@ -390,7 +407,7 @@ async fn chat_fetch(
     let http = client(timeout_secs)?;
     let resp = http
         .post(provider.chat_url())
-        .headers(headers(provider, key))
+        .headers(headers(provider, key)?)
         .json(&body)
         .send()
         .await?;
@@ -646,7 +663,7 @@ async fn list_models_snapshot(settings: LlmSettings, key: String) -> AppResult<V
     let http = client(REQUEST_TIMEOUT_SECS)?;
     let resp = http
         .get(provider.path("/models"))
-        .headers(headers(&provider, &key))
+        .headers(headers(&provider, &key)?)
         .send()
         .await?;
     let status = resp.status();

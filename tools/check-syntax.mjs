@@ -18,6 +18,18 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// 缺这个开关时 vm.SourceTextModule 不存在，每个文件都会被判成"失败"，
+// 看上去像 27 个语法错误——比漏报更坏。所以先自查再干活。
+if (typeof vm.SourceTextModule !== 'function') {
+  console.error(
+    '本脚本需要 ES 模块解析支持，请这样运行：\n' +
+      '  node --experimental-vm-modules tools/check-syntax.mjs\n' +
+      '（缺该开关时 vm.SourceTextModule 不可用，会把每个文件都误报成语法错误）',
+  );
+  process.exit(2);
+}
+
 const targets = process.argv.slice(2);
 const roots = (targets.length ? targets : ['prototype']).map((p) => resolve(ROOT, p));
 

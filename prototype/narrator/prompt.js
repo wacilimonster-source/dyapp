@@ -48,7 +48,14 @@ export function composeNarrative({ action, index, state, retrieved = [], recent 
     if (L1.text) {
       const content = `【世界法则 · 常驻】\n${L1.text}`;
       messages.push({ role: 'system', content });
-      meta.layers.push({ name: 'L1', tokens: estimateTokens(content), included: L1.included, total: L1.total });
+      meta.layers.push({
+        name: 'L1',
+        tokens: estimateTokens(content),
+        included: L1.included,
+        total: L1.total,
+        // 被截断的常驻条目要能看见：否则"世界法则少了半条"在界面上完全没有痕迹
+        truncated: L1.truncated,
+      });
     }
   }
 
