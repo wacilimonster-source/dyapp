@@ -8,7 +8,7 @@
 
 import { applyAll } from './effects.js';
 import { normalize } from './state.js';
-import { cultivate, breakthroughChance, parseRealm, realmIndex } from './rules.js';
+import { advanceRealm, cultivate, breakthroughChance, parseRealm, realmIndex } from './rules.js';
 import { sceneClass, tick as encounterTick, pickCandidate } from './encounter.js';
 import { rollDuel } from './dice.js';
 import { advanceTime, deriveTime, TIME_SLOTS, SEASONS } from './time.js';
@@ -51,8 +51,20 @@ export function resolveIntent(action, state, rng) {
     const p = breakthroughChance({ 道心: state.主角.道心, rootText: state.主角.灵根, targetMajor: major });
     const win = rng() < p;
     hints.push(`突破判定：引擎掷骰，成功率 ${(p * 100).toFixed(0)}%，结果「${win ? '成功' : '失败'}」。请描写经脉游走与成败的经过，不要改结果。`);
-    if (win) effects.push({ op: 'delta', target: '主角.修为', value: -100, reason: '突破消耗修为' });
-    else effects.push({ op: 'delta', target: '主角.生命', value: -12, reason: '突破失败反噬' });
+    if (win) {
+      effects.push({ op: 'delta', target: '主角.修为', value: -100, reason: '突破消耗修为' });
+      // 晋阶由引擎写：L0 禁止模型改境界，不写就永远停在原地（实测的断点）
+      const before = state.主角.境界;
+      const next = advanceRealm(before);
+      if (next) {
+        effects.push({ op: 'set', target: '主角.境界', value: next, reason: '突破成功' });
+        hints.push(`境界变化：${before} → ${next}（引擎已结算并写入状态，正文里不要另写数值或重复宣布）。`);
+      } else {
+        hints.push('已至最高境界，修为虽消耗但境界不再前进。');
+      }
+    } else {
+      effects.push({ op: 'delta', target: '主角.生命', value: -12, reason: '突破失败反噬' });
+    }
     advanceTime(state.世界, 3);
     hints.push(`时间推进到：${state.世界.当前时间}。`);
     return {

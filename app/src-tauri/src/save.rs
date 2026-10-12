@@ -91,14 +91,27 @@ pub fn read_bundle(app: &AppHandle, save_id: &str) -> AppResult<SaveBundle> {
         }
     };
 
+    // state.json 是权威状态：损坏必须报错，不能静默变成 null ——
+    // 前端拿到空状态可能触发"重置式覆盖"，等于把损坏升级成丢档。
     let state: Value = if state_path(&dir).exists() {
-        serde_json::from_str(&read_to_string(&state_path(&dir))?).unwrap_or(Value::Null)
+        serde_json::from_str(&read_to_string(&state_path(&dir))?).map_err(|e| {
+            AppError::Data(format!(
+                "存档 {id} 的 state.json 已损坏（{e}）；请用「导入」恢复备份，不要在此档上继续游玩"
+            ))
+        })?
     } else {
         Value::Null
     };
 
+    // world.json 只是解锁足迹等附属数据：坏了不阻塞读档，但要留痕
     let world: Value = if world_path(&dir).exists() {
-        serde_json::from_str(&read_to_string(&world_path(&dir))?).unwrap_or(json!({}))
+        match serde_json::from_str(&read_to_string(&world_path(&dir))?) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[save] {id} 的 world.json 损坏，已按空处理：{e}");
+                json!({})
+            }
+        }
     } else {
         json!({})
     };
@@ -216,12 +229,17 @@ pub fn import_bundle(app: &AppHandle, bundle_json: &str) -> AppResult<SaveMeta> 
         bundle.meta.id.clone()
     };
 
-    // 冲突就换 id，不覆盖
-    let mut id = sanitize_id(&raw_id);
+    // 冲突就换 id，不覆盖。
+    // 注意：sanitize_id 只取前 64 字符，所以拼后缀前必须先把主干截短 ——
+    // 否则主干已满 64 位时，`{raw}-2` 截断后与初始 id 完全相同，循环空转 98 次
+    // 后报"同 id 存档过多"，用户永远导不进来。
+    let stem = sanitize_id(&raw_id);
+    let mut id = stem.clone();
     let mut n = 1;
     while save_dir(app, &id)?.join("state.json").exists() {
         n += 1;
-        id = sanitize_id(&format!("{}-{}", raw_id, n));
+        let short: String = stem.chars().take(56).collect();
+        id = sanitize_id(&format!("{short}-{n}"));
         if n > 99 {
             return Err(AppError::Other("同 id 存档过多，换一个包再试".into()));
         }

@@ -311,7 +311,7 @@ pub fn sync_config_get(
 ) -> Value {
     json!({
         "config": sync.snapshot(),
-        "secrets": secrets.snapshot().masked(),
+        "secrets": secrets.masked(),
     })
 }
 
@@ -485,11 +485,20 @@ pub async fn sync_pull(
     let mut written = Vec::new();
     let mut backup_dir: Option<PathBuf> = None;
 
+    // 先把远端四件套全部取到内存，全部成功后才落盘。
+    // 原先边取边写：写到一半网络失败，本地 meta.json 已是远端新值、chat.jsonl 还是旧的，
+    // 下次同步会据此误判"本地最新"并拒绝拉取 —— 状态与叙事流就此分叉。
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     for name in SAVE_FILES {
         let Some((bytes, _)) = get_file(&token, &cfg, &format!("{}/{}", remote_dir, name)).await?
         else {
             continue;
         };
+        fetched.push((name.to_string(), bytes));
+    }
+
+    for (name, bytes) in &fetched {
+        let name = name.as_str();
         let target = dir.join(name);
         if target.exists() && backup_dir.is_none() {
             let bdir = dir.join(format!("conflict-{}", stamp));
@@ -502,7 +511,7 @@ pub async fn sync_pull(
             }
             backup_dir = Some(bdir);
         }
-        write_atomic(&target, &bytes)?;
+        write_atomic(&target, bytes)?;
         written.push(name.to_string());
     }
 
@@ -524,11 +533,21 @@ pub async fn sync_push_all(
     let ids = local_save_ids(&app)?;
     let mut report = Vec::new();
     for id in ids {
-        // 逐个走同步逻辑，单个失败不影响其余
+        // 逐个走同步逻辑，单个失败不影响其余。
+        // 原先这里的 `?` 会让任意一档读失败直接终止整批（注释说的和做的不一样）。
         let cfg = sync.snapshot();
         let token = secrets.snapshot().sync_token;
-        require(&token, &cfg.repo)?;
-        let dir = save_dir(&app, &id)?;
+        if let Err(e) = require(&token, &cfg.repo) {
+            report.push(json!({ "id": id, "uploaded": [], "error": e.to_string() }));
+            continue;
+        }
+        let dir = match save_dir(&app, &id) {
+            Ok(d) => d,
+            Err(e) => {
+                report.push(json!({ "id": id, "uploaded": [], "error": e.to_string() }));
+                continue;
+            }
+        };
         let remote_dir = format!("{}/{}", cfg.base_path.trim_end_matches('/'), id);
         let remote = list_dir(&token, &cfg, &remote_dir)
             .await
@@ -540,11 +559,23 @@ pub async fn sync_push_all(
             if !path.exists() {
                 continue;
             }
-            let mut bytes = std::fs::read(&path)?;
+            let mut bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    failed = Some(format!("读取 {name} 失败：{e}"));
+                    break;
+                }
+            };
             if name.ends_with(".json") {
                 if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
                     redact_for_transfer(&mut value);
-                    bytes = serde_json::to_vec_pretty(&value)?;
+                    match serde_json::to_vec_pretty(&value) {
+                        Ok(b) => bytes = b,
+                        Err(e) => {
+                            failed = Some(format!("序列化 {name} 失败：{e}"));
+                            break;
+                        }
+                    }
                 }
             }
             let local_sha = git_blob_sha(&bytes);

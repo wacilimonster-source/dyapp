@@ -155,11 +155,24 @@ function buildPresetPlan({ preset, engine, names, rng }) {
     r.warnings.forEach((w) => warnings.push(w));
     r.used.forEach((m) => usedMacros.add(m));
     if (entry.injectionPosition === 1) {
-      deepInserts.push({ depth: entry.injectionDepth, role: entry.role, content: r.text });
+      // 深度必须夹到合法范围并记下越界项：原先只处理 1..8，
+      // depth=20 的条目会既不做深度插入、又在顺序展开时被跳过 —— 静默消失
+      let d = Math.floor(Number(entry.injectionDepth));
+      if (!Number.isFinite(d) || d < 1) {
+        warnings.push(`「${entry.name}」的注入深度 ${entry.injectionDepth} 非法，已按 1 处理`);
+        d = 1;
+      } else if (d > 32) {
+        warnings.push(`「${entry.name}」的注入深度 ${d} 超出上限（32），已按 32 处理`);
+        d = 32;
+      }
+      deepInserts.push({ depth: d, role: entry.role, content: r.text });
     } else {
       active.set(entry.identifier, r.text);
     }
   }
+
+  /** 本回合实际用到的深度，去重排序（不再硬编码 1..8）。 */
+  const insertedDepths = () => [...new Set(deepInserts.map((x) => x.depth))].sort((a, b) => a - b);
 
   const pushDeep = (into, depthFromEnd) => {
     const picked = deepInserts.filter((d) => d.depth === depthFromEnd);
@@ -186,7 +199,7 @@ function buildPresetPlan({ preset, engine, names, rng }) {
         content: String(t.text || ''),
       }));
       // 深度插入：挑几个常见深度（1..8）依次插入
-      for (let d = 1; d <= 8; d++) pushDeep(history, d);
+      for (const d of insertedDepths()) pushDeep(history, d);
       const trimmed = applyContextBudget(history, preset.sampling?.openai_max_context, warnings);
       messages.push(...trimmed);
       layers.push({ name: '近期叙事', tokens: trimmed.reduce((s, m) => s + estimateTokens(m.content) + 4, 0), turns: trimmed.length });
@@ -203,7 +216,7 @@ function buildPresetPlan({ preset, engine, names, rng }) {
       role: t.role === 'user' ? 'user' : 'assistant',
       content: String(t.text || ''),
     }));
-    for (let d = 1; d <= 8; d++) pushDeep(history, d);
+    for (const d of insertedDepths()) pushDeep(history, d);
     messages.push(...applyContextBudget(history, preset.sampling?.openai_max_context, warnings));
   }
 

@@ -62,7 +62,7 @@ import { retrieve } from './memory/retrieve.js';
   /** 拉预设列表，并重新解析当前选中的那份。 */
   async function refreshPresets() {
     try {
-      CHAT_PRESETS = presetStore.persistent || true ? await presetStore.list() : [];
+      CHAT_PRESETS = await presetStore.list();
     } catch (e) {
       CHAT_PRESETS = [];
       console.warn('[preset] 列表读取失败：', e.message);
@@ -437,6 +437,7 @@ import { retrieve } from './memory/retrieve.js';
     currentSaveId = newSaveId('save');
     if (WORLDBOOK) WORLD_INDEX = buildIndex(WORLDBOOK, { realm: state.主角.所在界 });
 
+    setSuggestions([]);            // 新档开局不继承上一局的建议
     showScreen('s-game'); renderStream(); renderHUD(); renderSidebar();
     autosave();
   }
@@ -516,6 +517,9 @@ import { retrieve } from './memory/retrieve.js';
   function renderStream() {
     const first = turns.find((t) => t.scene);
     $('#stream').innerHTML = (first ? sceneBanner(first.scene) : '') + turns.map(msgHTML).join('');
+    // 重渲整条叙事流时按最后一轮的建议同步吸附条，避免与屏幕内容对不上
+    const last = [...turns].reverse().find((t) => t.role === 'assistant' && (t.choices || []).length);
+    setSuggestions(last ? last.choices : []);
   }
   function scrollStream() { const s = $('#stream'); s.scrollTop = s.scrollHeight; }
   function appendTurn(t) {
@@ -591,7 +595,23 @@ import { retrieve } from './memory/retrieve.js';
   };
 
   /** 走引擎跑一回合：推进 → 检索 → 叙事(流式) → 裁决 → 落地 → 刷界面。 */
+  /** 回合进行中标志：流式期间重复点建议/主行动会并发跑两个回合，状态互相覆盖。 */
+  let turnInFlight = false;
+
   async function runEngineTurn(action, opts = {}) {
+    if (turnInFlight) return null;      // 一个回合没跑完，忽略新的
+    turnInFlight = true;
+    const actionsEl = $('#actions');
+    if (actionsEl) actionsEl.classList.add('busy');
+    try {
+      return await runEngineTurnInner(action, opts);
+    } finally {
+      turnInFlight = false;
+      if (actionsEl) actionsEl.classList.remove('busy');
+    }
+  }
+
+  async function runEngineTurnInner(action, opts = {}) {
     const { bubble, wrap } = newAssistantBubble();
     const llm = window.DYApp.available() && LLM.ready ? window.DYApp.llm : null;
     let result;
@@ -644,6 +664,15 @@ import { retrieve } from './memory/retrieve.js';
     if (result.encounter) {
       wrap.insertAdjacentHTML('beforeend', `<div class="fx"><span class="fx-chip">偶遇 · ${esc(result.encounter.name)}</span></div>`);
     }
+    // 数值飘字：由引擎落地产出的事件驱动（applyAll 的 events）
+    // 注意：effects 是"意图"，events 才是真正落地后的增量；飘字必须用后者
+    for (const ev of result.events || []) {
+      if (ev.kind === 'float' && ev.key) {
+        const meta = D.RES.find((x) => x.key === ev.key);
+        float(ev.key, ev.delta, meta ? meta.color : '#d4af37');
+      }
+    }
+
     // 建议吸附到输入区上方（不再埋在叙事流里）
     const choices = result.choices || [];
     setSuggestions(choices);
@@ -712,6 +741,7 @@ import { retrieve } from './memory/retrieve.js';
       turns.length = 0;
       if (Array.isArray(b.turns)) turns.push(...b.turns);
       currentSaveId = id;
+      setSuggestions([]);          // 换档后不能留着上一局的建议（会误导操作）
       renderStream(); renderHUD(); renderSidebar();
       SAVE.log = `已读取 ${id}`;
     } catch (e) {
@@ -763,6 +793,9 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   async function freeText(text, kind = 'free') {
+    // 守卫必须在**写用户回合之前**：否则连点 3 次会记下 3 个用户回合，
+    // 而引擎只跑 1 次 —— 叙事流里留下两个没有回复的空提问。
+    if (turnInFlight) return null;
     turns.push({ role: 'user', text });
     appendTurn(turns[turns.length - 1]);
     renderHUD();
@@ -774,6 +807,7 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   async function breakthrough() {
+    if (turnInFlight) return null;
     const text = '冲击瓶颈，尝试突破。';
     turns.push({ role: 'user', text });
     appendTurn(turns[turns.length - 1]);
@@ -802,20 +836,41 @@ import { retrieve } from './memory/retrieve.js';
     }
     return r;
   }
+  /**
+   * 数值飘字。
+   *
+   * 两个实测坑：
+   * 1. HUD 六维默认是折叠的（`.hud-bars.collapsed { display:none }`），
+   *    此时对应条的 getBoundingClientRect 全是 0 —— 飘字会被放到视口左上角之外，
+   *    玩家什么也看不到。所以量不到尺寸时退回到 HUD 底边居中飘。
+   * 2. 同名 `data-res` 在 HUD 与抽屉面板里都有，必须限定在 HUD 内取。
+   */
   function float(key, v, color) {
-    const bar = $(`[data-res="${key}"]`);
-    if (!bar) return;
-    const r = bar.getBoundingClientRect();
+    const bar = $(`#hud [data-res="${key}"]`);
+    let cx = 0, top = 0;
+    const r = bar ? bar.getBoundingClientRect() : null;
+    if (r && r.width > 0) {
+      cx = r.left + r.width * 0.5;
+      top = r.top - 6;
+    } else {
+      const hud = $('#hud');
+      const hr = hud ? hud.getBoundingClientRect() : null;
+      if (!hr || hr.width === 0) return;      // 游戏页未显示时不飘
+      cx = hr.left + hr.width * 0.5;
+      top = hr.bottom - 14;
+    }
     const d = document.createElement('div');
     d.className = 'float'; d.style.color = color;
     d.textContent = (v >= 0 ? '+' : '') + v;
-    d.style.left = (r.left + r.width * 0.5 - 10) + 'px';
-    d.style.top = (r.top - 6) + 'px';
+    d.style.left = (cx - 10) + 'px';
+    d.style.top = top + 'px';
     document.body.appendChild(d);
     setTimeout(() => d.remove(), 1400);
   }
 
   /* ================= 判定演出 ================= */
+  /** 覆盖层待确认的回调：Esc 关闭时必须补跑，否则该回合白跑。 */
+  let judgeAck = null;
   /**
    * 判定覆盖层。**面板上的数字没有一个来自模型** —— 全部由 engine/turn.js 掷骰得出，
    * 模型只负责把成败的过程演得合理。
@@ -851,8 +906,12 @@ import { retrieve } from './memory/retrieve.js';
     const handler = () => {
       $('#judge').classList.remove('open');
       ok.removeEventListener('click', handler);
+      judgeAck = null;
       if (typeof onAck === 'function') onAck();
     };
+    // Esc 也必须走同一条路径：否则本回合的正文与状态推进就永久丢了
+    // （runTurn 里状态已落地，但叙事没写进流里、也没存档）
+    judgeAck = handler;
     ok.addEventListener('click', handler);
   }
 
@@ -1386,6 +1445,7 @@ import { retrieve } from './memory/retrieve.js';
     $('#rail-home').addEventListener('click', () => showScreen('s-boot'));
   }
   function openPanel(name, { reset = false } = {}) {
+    closeMoreSheet();   // 切面板时收起「更多」，否则弹层会悬在行动区上方
     const switching = name !== curPanel || reset;
     curPanel = name;
     // 平板上打开面板时，把收起的右栏自动展开——不然点了图标什么也不发生
@@ -1413,19 +1473,28 @@ import { retrieve } from './memory/retrieve.js';
   /* ---------- 键盘（平板带键盘 / 桌面） ---------- */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if ($('#judge').classList.contains('open')) { $('#judge').classList.remove('open'); return; }
+      if ($('#judge').classList.contains('open')) {
+        // 判定层：走"承认结果"而不是直接隐藏，否则叙事与存档都会缺这一回合
+        if (typeof judgeAck === 'function') judgeAck();
+        else $('#judge').classList.remove('open');
+        return;
+      }
       if ($('#sidebar').classList.contains('open')) { closePanel(); return; }
       closeMoreSheet();
       return;
     }
-    // 1–4 选行动建议
-    if (/^[1-4]$/.test(e.key) && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) {
+    // 1–4 选行动建议（判定/预览覆盖层打开时不响应，否则会"隔着遮罩"发起新回合）
+    if (/^[1-4]$/.test(e.key)
+      && !$('#judge').classList.contains('open')
+      && !e.isComposing
+      && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) {
       const btn = $$('#sugg .c')[Number(e.key) - 1];
       if (btn) { e.preventDefault(); btn.click(); }
       return;
     }
     // Alt+←/→ 循环面板
     if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      closeMoreSheet();
       const i = PANELS.findIndex((p) => p.id === curPanel);
       const next = PANELS[(i + (e.key === 'ArrowRight' ? 1 : PANELS.length - 1) + PANELS.length) % PANELS.length];
       if (next) { e.preventDefault(); openPanel(next.id); }
@@ -1438,23 +1507,34 @@ import { retrieve } from './memory/retrieve.js';
     if (!head) return;
     let y0 = null;
     head.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; }, { passive: true });
+    const resetDrag = (sb) => { sb.style.transform = ''; sb.classList.remove('dragging'); };
     head.addEventListener('touchmove', (e) => {
       if (y0 == null) return;
-      const dy = e.touches[0].clientY - y0;
       const sb = $('#sidebar');
-      if (dy > 0 && !$('#sidebar').classList.contains('mini')) {
+      // 手机上 .mini 是恒有的（折叠态），原先的 !mini 守卫让拖拽反馈在手机上完全失效
+      const draggable = app.dataset.layout === 'phone' || !sb.classList.contains('mini');
+      if (!draggable) return;
+      const dy = e.touches[0].clientY - y0;
+      if (dy > 0) {
+        sb.classList.add('dragging');   // 关掉 transition，跟随手指才不黏
         sb.style.transform = 'translateX(0) translateY(' + Math.min(dy, 120) + 'px)';
       }
     }, { passive: true });
     head.addEventListener('touchend', (e) => {
       const sb = $('#sidebar');
       const dy = y0 == null ? 0 : (e.changedTouches[0].clientY - y0);
-      sb.style.transform = '';
+      resetDrag(sb);
       y0 = null;
       // 手机：下滑关闭抽屉；平板：下滑收起右栏
       if (dy > 70) {
         if (app.dataset.layout === 'tablet') toggleSide(true); else closePanel();
       }
+    });
+    // 手势被系统打断（来电/返回手势/滚动接管）时也要复位，
+    // 否则 inline transform 会残留，抽屉一直斜挂着
+    head.addEventListener('touchcancel', () => {
+      resetDrag($('#sidebar'));
+      y0 = null;
     });
   })();
 
@@ -1676,6 +1756,11 @@ import { retrieve } from './memory/retrieve.js';
           <button class="btn" id="cfg-test">测试 · 拉取模型</button>
         </div>
         <div style="margin-top:8px"><button class="btn" id="cfg-clearkey" style="width:100%">清 除 Key</button></div>
+        ${(LLM.secrets && LLM.secrets.decryptError) ? `<div class="card" style="margin-top:10px;border-color:rgba(255,122,107,.5)">
+          <b style="color:var(--bad)">密钥文件无法解密</b>
+          <div style="color:var(--dim);font-size:.8rem;margin-top:6px">${esc(LLM.secrets.decryptError)}</div>
+          <div class="cr-hint" style="margin-top:6px">常见原因：文件被改动过、或从另一台设备直接拷了 secrets.enc 过来。重新填写 API Key 会覆盖它（旧内容届时不可恢复）。</div>
+        </div>` : ''}
         <div id="cfg-log" class="cr-hint" style="margin-top:12px">${LLM.error ? '壳通信失败：' + esc(LLM.error)
           : LLM.ready ? '<span style="color:var(--ok)">状态：已就绪 —— 行动将走大模型生成。</span>'
             : '状态：未配置完整 —— 行动暂用离线示例文本。'}</div>

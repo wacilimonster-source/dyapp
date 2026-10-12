@@ -185,6 +185,29 @@ export function breakthroughChance({ 道心, rootText, 丹药加成 = 0, targetM
   return clamp(p, 0.05, 0.95);
 }
 
+/**
+ * 下一个境界标签（引擎负责晋阶）。
+ *
+ * 为什么必须由引擎做：L0 协议明确禁止模型改境界，所以"突破成功"之后
+ * 没有任何一方会去写 `主角.境界` —— 实测发现核心成长循环因此断掉
+ * （修为清零、境界永远停在创角时的炼气一层）。
+ *
+ * 规则：小境界 +1；九层则进下一个大境界的一层；单值境界（渡劫/超脱…）直接进下一大境界。
+ * 大境界所需的丹药/渡劫条件由叙事与道具负责，引擎只保证"境界确实前进了"。
+ */
+export function advanceRealm(label) {
+  const { major, minor } = parseRealm(label);
+  const idx = realmIndex(major);
+  if (idx < 0 || idx >= REALM_ORDER.length - 1) {
+    return REALM_ORDER[idx] === major ? null : null; // 已是最后一境
+  }
+  if (SINGLE_MINOR.has(major) || minor >= 9) {
+    const nextMajor = REALM_ORDER[idx + 1];
+    return nextMajor ? realmLabel(nextMajor, 1) : null;
+  }
+  return realmLabel(major, minor + 1);
+}
+
 /* ------------------------------ 道心与模糊感知 ------------------------------ */
 
 /** 道心四境。 */

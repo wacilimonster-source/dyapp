@@ -326,8 +326,23 @@ fn build_body(slot: &ModelSlot, messages: &[ChatMessage], stream: bool, json_mod
     if json_mode {
         body["response_format"] = json!({ "type": "json_object" });
     }
+    // extra_body 是"厂商私有字段"的透传口，必须**不能**覆盖协议关键字段。
+    // 否则一份手改的 llm.json（或预设带来的 extraBody）写进 {"stream": false}
+    // 就能绕过本模块"一律流式"的前提 —— 正好触发它想规避的挂死路径。
+    const RESERVED: [&str; 6] = [
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        "response_format",
+        "tools",
+    ];
     if let Some(obj) = body.as_object_mut() {
         for (k, v) in &slot.extra_body {
+            if RESERVED.contains(&k.as_str()) {
+                eprintln!("[llm] 忽略 extra_body 中的保留键：{k}");
+                continue;
+            }
             obj.insert(k.clone(), v.clone());
         }
     }
@@ -418,6 +433,25 @@ async fn chat_fetch(
             }
             if let Some(u) = value.get("usage").filter(|u| !u.is_null()) {
                 let _ = u; // usage 目前只透传给 UI 的成本估算，尚未落库
+            }
+        }
+    }
+
+    // 收尾 flush：SSE 允许最后一个事件以 EOF 结束而不带换行，
+    // 此时它仍留在 buf 里。原先直接丢——最后一截正文乃至 [DONE] 会少掉。
+    if !buf.is_empty() {
+        let line = String::from_utf8_lossy(&buf).trim().to_string();
+        if let Some(payload) = line.strip_prefix("data:") {
+            let payload = payload.trim();
+            if payload != "[DONE]" {
+                if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                    if let Some(text) = delta_text(&value) {
+                        full.push_str(&text);
+                        if let Some(cb) = on_delta.as_deref_mut() {
+                            cb(&text);
+                        }
+                    }
+                }
             }
         }
     }
@@ -556,7 +590,7 @@ pub fn llm_settings_get(
 ) -> Value {
     json!({
         "settings": llm.snapshot(),
-        "secrets": secrets.snapshot().masked(),
+        "secrets": secrets.masked(),
     })
 }
 
@@ -642,9 +676,8 @@ pub async fn llm_chat_stream(
     req: ChatRequest,
 ) -> AppResult<()> {
     // 把状态克隆出来，避免跨 await 持有 State 借用
-    let secrets_state = SecretsState {
-        inner: Mutex::new(secrets.inner.lock().map(|g| g.clone()).unwrap_or_default()),
-    };
+    let secrets_state =
+        SecretsState::from_snapshot(secrets.inner.lock().map(|g| g.clone()).unwrap_or_default());
     let llm_state = LlmState {
         inner: Mutex::new(llm.snapshot()),
     };
@@ -658,13 +691,74 @@ pub async fn llm_complete_json(
     llm: tauri::State<'_, LlmState>,
     req: ChatRequest,
 ) -> AppResult<Value> {
-    let secrets_state = SecretsState {
-        inner: Mutex::new(secrets.inner.lock().map(|g| g.clone()).unwrap_or_default()),
-    };
+    let secrets_state =
+        SecretsState::from_snapshot(secrets.inner.lock().map(|g| g.clone()).unwrap_or_default());
     let llm_state = LlmState {
         inner: Mutex::new(llm.snapshot()),
     };
     complete_json(app, secrets_state, llm_state, req).await
+}
+
+/* ============================ 单元测试 ============================ */
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    fn slot_with(extra: Vec<(&str, Value)>) -> ModelSlot {
+        let mut s = ModelSlot {
+            model: "m".into(),
+            temperature: 0.5,
+            top_p: 0.9,
+            max_tokens: None,
+            extra_body: HashMap::new(),
+        };
+        for (k, v) in extra {
+            s.extra_body.insert(k.to_string(), v);
+        }
+        s
+    }
+
+    /// 回归：extra_body 曾无条件覆盖请求体，于是 {"stream": false} 能绕过
+    /// 本模块"一律流式"的前提（那条路径在实测渠道上会挂死）。
+    #[test]
+    fn extra_body_不得覆盖保留键() {
+        let slot = slot_with(vec![("stream", json!(false)), ("model", json!("hacked"))]);
+        let body = build_body(
+            &slot,
+            &[ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            }],
+            true,
+            false,
+        );
+        assert_eq!(body["stream"], json!(true), "stream 必须保持流式");
+        assert_eq!(body["model"], json!("m"), "model 不能被 extra_body 改掉");
+    }
+
+    #[test]
+    fn extra_body_的普通键仍会透传() {
+        let slot = slot_with(vec![
+            ("frequency_penalty", json!(0.3)),
+            ("enable_thinking", json!(true)),
+        ]);
+        let body = build_body(&slot, &[], true, false);
+        assert_eq!(body["frequency_penalty"], json!(0.3));
+        assert_eq!(body["enable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn 流式才带_stream_options_json_模式才带_response_format() {
+        let slot = slot_with(vec![]);
+        let streamed = build_body(&slot, &[], true, false);
+        assert!(streamed.get("stream_options").is_some());
+        assert!(streamed.get("response_format").is_none());
+
+        let jsoned = build_body(&slot, &[], false, true);
+        assert!(jsoned.get("stream_options").is_none());
+        assert_eq!(jsoned["response_format"]["type"], json!("json_object"));
+    }
 }
 
 /* ============================ 真实渠道测试 ============================ */

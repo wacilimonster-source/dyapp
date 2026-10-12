@@ -19,10 +19,10 @@ use std::path::Path;
 use crate::error::{AppError, AppResult};
 use crate::paths::{read_to_string, write_atomic};
 
-#[cfg(windows)]
-const MAGIC: &[u8; 4] = b"DYA1";
-#[cfg(not(windows))]
-const MAGIC: &[u8; 4] = b"DYA2";
+/// Windows DPAPI 密文头（第 5 字节 = 版本 1）。
+const MAGIC_DPAPI: &[u8; 4] = b"DYA1";
+/// AEAD 密文头（非 Windows 平台写，第 5 字节 = 版本 2）。
+const MAGIC_AEAD: &[u8; 4] = b"DYA2";
 
 const SALT_FILE: &str = "install.salt";
 const KEY_FILE: &str = "install.key";
@@ -50,31 +50,23 @@ pub fn seal(config_dir: &Path, plaintext: &[u8]) -> AppResult<Vec<u8>> {
 }
 
 /// 解密。按密文里的版本头选择算法。
+/// 解密。**按密文头分派**，而不是按"本平台的 MAGIC" ——
+/// 原先 MAGIC 与平台绑定（Windows 写 DYA1、其它写 DYA2），于是安卓上一看到
+/// Windows 的密文就先报"格式不对"，那句"这是 DPAPI 加密、请在本机重填"的提示
+/// 永远走不到（死代码）。现在两个头都认，跨设备拷贝能给出可读解释。
 pub fn open(config_dir: &Path, blob: &[u8]) -> AppResult<Vec<u8>> {
-    if blob.len() < 5 || &blob[..4] != MAGIC {
+    if blob.len() < 5 {
         return Err(AppError::Data("密钥文件格式不对或已损坏".into()));
     }
-    match blob[4] {
-        1 => {
-            #[cfg(windows)]
-            {
-                platform_open(blob)
-            }
-            #[cfg(not(windows))]
-            {
-                Err(AppError::Data(
-                    "该密钥文件由 Windows 的 DPAPI 加密，无法在本平台解开；请在本机重新填写一次。"
-                        .into(),
-                ))
-            }
-        }
-        2 => aead_open(config_dir, blob),
-        v => Err(AppError::Data(format!("不认识的密钥文件版本：{v}"))),
+    match &blob[..4] {
+        h if h == MAGIC_DPAPI => platform_open(blob),
+        h if h == MAGIC_AEAD => aead_open(config_dir, blob),
+        _ => Err(AppError::Data("密钥文件格式不对或已损坏".into())),
     }
 }
 
 pub fn is_sealed(blob: &[u8]) -> bool {
-    blob.len() > 4 && &blob[..4] == MAGIC
+    blob.len() > 4 && (&blob[..4] == MAGIC_DPAPI || &blob[..4] == MAGIC_AEAD)
 }
 
 /* ============================ Windows: DPAPI ============================ */
@@ -108,7 +100,7 @@ fn platform_seal(plaintext: &[u8]) -> AppResult<Vec<u8>> {
         }
         let out = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         windows_sys::Win32::Foundation::LocalFree(output.pbData as *mut core::ffi::c_void);
-        Ok([MAGIC.as_slice(), &[1u8], &out].concat())
+        Ok([MAGIC_DPAPI.as_slice(), &[1u8], &out].concat())
     }
 }
 
@@ -165,6 +157,15 @@ fn derive_key(config_dir: &Path) -> AppResult<[u8; 32]> {
         k.to_vec()
     };
 
+    // 长度校验：被截断的密钥/盐会让 HKDF 照常派生出一个"解不开的"密钥，
+    // 报错会指向"文件损坏"，与真实原因（长度不对）不符，排查时容易跑偏。
+    if master.len() != 32 {
+        return Err(AppError::Data(format!(
+            "密钥文件 {KEY_FILE} 长度异常（{} 字节，应为 32）：请删除该文件后重新填写 API Key",
+            master.len()
+        )));
+    }
+
     let salt_path = config_dir.join(SALT_FILE);
     let salt = if salt_path.exists() {
         std::fs::read(&salt_path)?
@@ -174,6 +175,13 @@ fn derive_key(config_dir: &Path) -> AppResult<[u8; 32]> {
         write_atomic(&salt_path, &s)?;
         s.to_vec()
     };
+
+    if salt.len() != 16 {
+        return Err(AppError::Data(format!(
+            "盐文件 {SALT_FILE} 长度异常（{} 字节，应为 16）",
+            salt.len()
+        )));
+    }
 
     let hk = Hkdf::<Sha256>::new(Some(&salt), &master);
     let mut okm = [0u8; 32];
@@ -194,7 +202,7 @@ fn aead_seal(config_dir: &Path, plaintext: &[u8]) -> AppResult<Vec<u8>> {
     let ct = cipher
         .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
         .map_err(|_| AppError::Other("加密失败".into()))?;
-    Ok([MAGIC.as_slice(), &[2u8], &nonce_bytes, &ct].concat())
+    Ok([MAGIC_AEAD.as_slice(), &[2u8], &nonce_bytes, &ct].concat())
 }
 
 fn aead_open(config_dir: &Path, blob: &[u8]) -> AppResult<Vec<u8>> {
@@ -340,6 +348,36 @@ mod tests {
         let got = read_sealed(&dir, "probe.enc").unwrap().unwrap();
         assert_eq!(got, b"{\"k\":1}");
         assert!(read_sealed(&dir, "missing.enc").unwrap().is_none());
+    }
+
+    /// 回归：截断的 install.key 曾让 HKDF 照常派生出一个"解不开的"密钥，
+    /// 报错指向"文件损坏"而不是真实原因（长度不对）。
+    #[test]
+    fn 密钥文件长度异常要明确报错() {
+        let dir = tmp_dir("badkey");
+        std::fs::write(dir.join(KEY_FILE), b"short").unwrap();
+        let e = aead_seal(&dir, b"x").unwrap_err().to_string();
+        assert!(e.contains("长度异常"), "错误信息应直指长度：{e}");
+    }
+
+    #[test]
+    fn 盐文件长度异常要明确报错() {
+        let dir = tmp_dir("badsalt");
+        let mut k = [0u8; 32];
+        getrandom::getrandom(&mut k).unwrap();
+        std::fs::write(dir.join(KEY_FILE), k).unwrap();
+        std::fs::write(dir.join(SALT_FILE), b"123").unwrap();
+        let e = aead_seal(&dir, b"x").unwrap_err().to_string();
+        assert!(e.contains("长度异常"), "错误信息应直指长度：{e}");
+    }
+
+    /// 回归：MAGIC 曾与平台绑定，导致安卓上看到 Windows 密文只会报"格式不对"，
+    /// "这是 DPAPI 加密"的提示不可达。现在两个头都认。
+    #[test]
+    fn 两种密文头都被认作已加密() {
+        assert!(is_sealed(b"DYA1\x01payload"));
+        assert!(is_sealed(b"DYA2\x02nonce+ciphertext"));
+        assert!(!is_sealed(b"{\"a\":1}"));
     }
 
     #[test]

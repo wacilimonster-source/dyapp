@@ -29,6 +29,10 @@ pub struct MaskedSecrets {
     pub llm_key_hint: String,
     pub sync_token_set: bool,
     pub sync_token_hint: String,
+    /// 上次加载密钥文件时的错误（解密失败/文件损坏）。前端据此提示用户，
+    /// 而不是让"我的 Key 莫名其妙没了"。
+    #[serde(default)]
+    pub decrypt_error: Option<String>,
 }
 
 impl LocalSecrets {
@@ -38,6 +42,7 @@ impl LocalSecrets {
             llm_key_hint: hint(&self.llm_api_key),
             sync_token_set: !self.sync_token.is_empty(),
             sync_token_hint: hint(&self.sync_token),
+            decrypt_error: None,
         }
     }
 }
@@ -59,18 +64,35 @@ fn hint(secret: &str) -> String {
 
 pub struct SecretsState {
     pub inner: Mutex<LocalSecrets>,
+    /// 加载密钥时的错误。宁可让用户看到"文件坏了"，也不要静默变成"没配过"。
+    pub load_error: Mutex<Option<String>>,
 }
 
 impl SecretsState {
     pub fn load(app: &AppHandle) -> AppResult<Self> {
         let dir = config_dir(app)?;
 
-        // 首选加密文件
-        if let Ok(Some(bytes)) = crypto::read_sealed(&dir, "secrets.enc") {
-            let parsed = serde_json::from_slice::<LocalSecrets>(&bytes).unwrap_or_default();
-            return Ok(Self {
-                inner: Mutex::new(parsed),
-            });
+        // 首选加密文件。注意 Err 与 Ok(None) 必须分开：
+        // 前者是"文件在但解不开"（损坏/被篡改/跨设备拷贝），
+        // 原先用 `if let Ok(Some(..))` 把它和"没有文件"一起吞掉，
+        // 用户会以为"我从没配过 Key"，而且重新填写还会覆盖掉可恢复的旧文件。
+        match crypto::read_sealed(&dir, "secrets.enc") {
+            Ok(Some(bytes)) => {
+                let parsed = serde_json::from_slice::<LocalSecrets>(&bytes).unwrap_or_default();
+                return Ok(Self {
+                    inner: Mutex::new(parsed),
+                    load_error: Mutex::new(None),
+                });
+            }
+            Ok(None) => { /* 没有文件，正常首次运行 */ }
+            Err(e) => {
+                let msg = format!("密钥文件无法解密：{e}");
+                eprintln!("[crypto] {msg}");
+                return Ok(Self {
+                    inner: Mutex::new(LocalSecrets::default()),
+                    load_error: Mutex::new(Some(msg)),
+                });
+            }
         }
 
         // 迁移：旧版本的明文 secrets.json —— 加密后就地删除明文，不留在磁盘上
@@ -79,6 +101,7 @@ impl SecretsState {
                 let parsed = serde_json::from_str::<LocalSecrets>(&text).unwrap_or_default();
                 let state = Self {
                     inner: Mutex::new(parsed),
+                    load_error: Mutex::new(None),
                 };
                 match state.persist(app) {
                     Ok(()) => {
@@ -93,7 +116,23 @@ impl SecretsState {
 
         Ok(Self {
             inner: Mutex::new(LocalSecrets::default()),
+            load_error: Mutex::new(None),
         })
+    }
+
+    /// 带加载错误的掩码视图：前端据此提示"密钥文件坏了"。
+    pub fn masked(&self) -> MaskedSecrets {
+        let mut m = self.snapshot().masked();
+        m.decrypt_error = self.load_error.lock().ok().and_then(|g| g.clone());
+        m
+    }
+
+    /// 从已快照的密钥构造（命令里跨 await 用）。
+    pub fn from_snapshot(inner: LocalSecrets) -> Self {
+        Self {
+            inner: Mutex::new(inner),
+            load_error: Mutex::new(None),
+        }
     }
 
     pub fn snapshot(&self) -> LocalSecrets {
