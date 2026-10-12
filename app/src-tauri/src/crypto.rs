@@ -141,6 +141,19 @@ fn platform_open(blob: &[u8]) -> AppResult<Vec<u8>> {
 
 /* ============================ 其它平台: AEAD ============================ */
 
+/// 非 Windows 平台遇到 DPAPI 密文时的解释。
+///
+/// 这个占位函数是**必须的**，不是凑数：`open()` 现在按密文头分派，两个头都认，
+/// 于是非 Windows 上也会调到 `platform_open`。少了它，Linux/Android 直接编译不过
+/// ——`cargo check` 在 Windows 上一直是绿的，是 CI 的 Linux 任务先报了 E0425。
+#[cfg(not(windows))]
+fn platform_open(_blob: &[u8]) -> AppResult<Vec<u8>> {
+    Err(AppError::Data(
+        "这是 Windows（DPAPI）加密的密钥文件，本机无法解开；请在本机的「模型配置」里重新填一次 API Key"
+            .into(),
+    ))
+}
+
 /// 派生密钥：HKDF-SHA256(ikm = 随机主密钥, salt = install.salt, info = 用途串)。
 fn derive_key(config_dir: &Path) -> AppResult<[u8; 32]> {
     use hkdf::Hkdf;
@@ -303,6 +316,22 @@ mod tests {
         );
         let back = open(&dir, &sealed).unwrap();
         assert_eq!(back, plain);
+    }
+
+    /// 非 Windows 上遇到 DPAPI 密文：要给出可读解释，而不是编译不过或崩掉。
+    /// 这条测试**只在 CI 的 Linux 任务上真正执行**——它守的是 `open()` 按密文头分派之后，
+    /// 非 Windows 侧必须存在 `platform_open` 这件事（缺了它 Linux 直接 E0425）。
+    #[cfg(not(windows))]
+    #[test]
+    fn 非_windows_遇到_dpapi_密文给出可读报错() {
+        let dir = tmp_dir("dpapi-on-unix");
+        let blob = [b"DYA1".as_slice(), &[1u8], &[0u8; 32]].concat();
+        assert!(is_sealed(&blob));
+        let err = open(&dir, &blob).unwrap_err().to_string();
+        assert!(
+            err.contains("Windows"),
+            "报错要说清是 Windows 的密文：{err}"
+        );
     }
 
     #[test]
