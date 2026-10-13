@@ -7,7 +7,7 @@
  */
 import { normalize as normalizeState, snapshot } from './engine/state.js';
 import { runTurn } from './engine/turn.js';
-import { daoStage, vague, crisisLevel, parseRealm, realmIndex, DC_TIERS } from './engine/rules.js';
+import { daoStage, vague, crisisLevel, parseRealm, realmIndex, DC_TIERS, REALM_ORDER } from './engine/rules.js';
 import { drawRootTier, applyCreateState, openingTurn, migrateFates } from './engine/create.js';
 import { rollFates, fateText, findFate, FATE_MODES, eroPool } from './engine/fate.js';
 import { evaluateAchievements, ACHIEVEMENTS } from './engine/achievements.js';
@@ -257,9 +257,14 @@ import { retrieve } from './memory/retrieve.js';
     '内容与原作角色卡完全一致，默认开启，不做删改。'));
 
   /* ================= 创角向导 ================= */
-  const defaultCreate = () => ({ step: 0, 姓名: '', 性别: '男', 出身: '', 灵根: null, 气运: [], 自定义: [], 道侣: '', 出生界: '玄天界', spinning: false });
+  const defaultCreate = () => ({ step: 0, 姓名: '', 性别: '男', 出身: '', 灵根: null, 气运: [], 自定义: [], 道侣: '', 境界: '', 出生界: '玄天界', spinning: false });
   const createState = defaultCreate();
   const STEPS = ['身份', '灵根', '气运', '道侣', '出生界', '确认'];
+  const CN_STEP = ['一', '二', '三', '四', '五', '六'];
+  /** 当前难度档实际出现的步骤：卡内 normal/hard 隐藏道侣自选（regex8_creation.txt:3131、3137）。 */
+  function visibleSteps() {
+    return FATE_MODES[FATE.mode].可自选道侣 ? [...STEPS] : STEPS.filter((s) => s !== '道侣');
+  }
   const ORIGINS = [
     { n: '寒门散修', d: '无依无靠，道心 +8，初始无宗门' },
     { n: '宗门外门', d: '青云宗外门弟子，初始贡献 120' },
@@ -405,15 +410,20 @@ import { retrieve } from './memory/retrieve.js';
     renderCreate();
   }
   function renderCreate() {
-    const st = createState.step;
-    $('#cr-steps').innerHTML = STEPS.map((_, i) =>
-      `<div class="st ${i === st ? 'on' : i < st ? 'done' : ''}"></div>`).join('');
+    // 三档难度决定表单里出现哪几步（卡内 normal/hard 会隐藏道侣自选），
+    // 所以步数不是固定 6 步 —— 进度条、上下步都按"可见步骤"走。
+    const vs = visibleSteps();
+    if (createState.step >= vs.length) createState.step = vs.length - 1;
+    const st = vs[createState.step];
+    $('#cr-steps').innerHTML = vs.map((_, i) =>
+      `<div class="st ${i === createState.step ? 'on' : i < createState.step ? 'done' : ''}"></div>`).join('');
     const body = $('#cr-body');
     const foot = $('#cr-foot');
+    const stepLabel = `第${CN_STEP[createState.step] || createState.step + 1}步 / 共 ${vs.length} 步`;
 
-    if (st === 0) {
+    if (st === '身份') {
       body.innerHTML = `
-        <div class="cr-step-label">第一步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">你 是 谁</div>
         <div class="cr-hint">姓名会写进世界对你的称呼；出身决定初始道心与宗门归属，之后不可更改。</div>
         <div class="field"><label>道号 / 姓名</label><input id="f-name" value="${esc(createState.姓名)}" placeholder="如：陆沉"></div>
@@ -426,18 +436,21 @@ import { retrieve } from './memory/retrieve.js';
         <div class="field"><label>命格难度</label><div class="opts">
           ${Object.entries(FATE_MODES).map(([k, m]) => `<button class="opt ${FATE.mode === k ? 'on' : ''}" data-fatemode="${k}">${m.名}<span class="d">气运演算 ${m.预算} 次 · 每次 ${k === 'hard' ? 5 : 10} 个候选${m.可出真 ? ' · 可出真·气运' : ' · 不出真·气运'}</span></button>`).join('')}
         </div>
-          <div class="cr-hint" style="margin-top:4px">对应原卡创角界面的三档（随缘 / 正途 / 逆天而行），只影响气运演算的规则。</div></div>`;
+          <div class="cr-hint" style="margin-top:4px">对应原卡创角界面的三档（随缘 / 正途 / 逆天而行）。它管的不只是演算次数：正途与逆天而行不给自选道侣、起始境界也不能随便填。</div></div>`;
       foot.innerHTML = `<button class="btn primary" id="cr-next">下 一 步</button>`;
       $('#f-name').addEventListener('input', (e) => (createState.姓名 = e.target.value));
       $$('#cr-body [data-fatemode]').forEach((b) => b.addEventListener('click', () => {
         FATE.mode = b.dataset.fatemode;
         FATE.rollsLeft = FATE_MODES[FATE.mode].预算;
         if (!FATE_MODES[FATE.mode].可出真) FATE.cheat = false;
+        // 换到不给自选道侣的档：把已经填过的道侣清掉，别让一个看不见的选择偷偷生效
+        if (!FATE_MODES[FATE.mode].可自选道侣) createState.道侣 = '';
+        if (FATE_MODES[FATE.mode].境界 === '未修炼') createState.境界 = '';
         renderCreate();
       }));
-    } else if (st === 1) {
+    } else if (st === '灵根') {
       body.innerHTML = `
-        <div class="cr-step-label">第二步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">灵 根 抽 取</div>
         <div class="cr-hint">灵根品阶决定修炼产出。天品万中无一，凡品亦可登顶——只是慢些。</div>
         <div class="spin ${createState.spinning ? 'spinning' : ''}"><div class="ring">
@@ -449,7 +462,7 @@ import { retrieve } from './memory/retrieve.js';
       foot.innerHTML = `<button class="btn" id="cr-roll">${createState.灵根 ? '重 抽' : '抽 取 灵 根'}</button>
         <button class="btn primary" id="cr-next" ${createState.灵根 ? '' : 'disabled style="opacity:.5"'}>下 一 步</button>`;
       $('#cr-roll').addEventListener('click', rollRoot);
-    } else if (st === 2) {
+    } else if (st === '气运') {
       if (LUCK && !FATE.cands.normal.length) fateRoll();
       const M = FATE_MODES[FATE.mode];
       const picked = FATE.picked;
@@ -459,7 +472,7 @@ import { retrieve } from './memory/retrieve.js';
           <span class="d">${esc(f.desc)}</span></button>`;
       const custom = createState.自定义 || [];
       body.innerHTML = `
-        <div class="cr-step-label">第三步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">气 运 演 算</div>
         <div class="cr-hint">一次演算给出候选，<b>凡道与合欢各只能定 1 条</b>。每条气运都带着原卡写明的代价 —— 请量力而行。</div>
         ${LUCK ? '' : '<div class="cr-hint" style="color:var(--bad)">气运库还没载入（data/luck.json）。可以先继续，之后靠「📖 气运库」手选。</div>'}
@@ -516,9 +529,9 @@ import { retrieve } from './memory/retrieve.js';
           renderCreate();
         }));
       }
-    } else if (st === 3) {
+    } else if (st === '道侣') {
       body.innerHTML = `
-        <div class="cr-step-label">第四步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">天 定 道 侣</div>
         <div class="cr-hint">可留空。留空则由天道在旅途中自行安排——她会在某个雨天遇见你。</div>
         <div class="field"><label>道侣姓名（可选）</label><input id="f-partner" value="${esc(createState.道侣)}" placeholder="留空即随机"></div>
@@ -527,29 +540,47 @@ import { retrieve } from './memory/retrieve.js';
         </div>`;
       foot.innerHTML = `<button class="btn primary" id="cr-next">下 一 步</button>`;
       $('#f-partner').addEventListener('input', (e) => (createState.道侣 = e.target.value));
-    } else if (st === 4) {
+    } else if (st === '出生界') {
+      const M = FATE_MODES[FATE.mode];
+      const realmHint = createState.出生界 === '仙界' ? '真仙一层' : '炼气一层';
+      const realmField = M.境界 === '未修炼'
+        ? `<div class="field"><label>起始境界</label><input value="未修炼" disabled style="opacity:.6">
+             <div class="cr-hint" style="margin-top:4px">逆天而行：连境界都是攒出来的。</div></div>`
+        : M.境界 === '下拉'
+          ? `<div class="field"><label>起始境界</label><select id="f-realm">
+              ${REALM_ORDER.map((r) => `<option value="${esc(r)}" ${((createState.境界 || '炼气期') === r) ? 'selected' : ''}>${esc(r)}</option>`).join('')}
+            </select><div class="cr-hint" style="margin-top:4px">正途：境界由宗门核定，不能自填。</div></div>`
+          : `<div class="field"><label>起始境界（可留空，按出生界推导）</label>
+              <input id="f-realm" value="${esc(createState.境界 || '')}" placeholder="${esc(realmHint)}"></div>`;
       body.innerHTML = `
-        <div class="cr-step-label">第五步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">出 生 之 界</div>
         <div class="cr-hint">玄天界灵气稀薄、步步凶险；仙界资源丰沛，却已无你的位置。</div>
         <div class="opts">
           ${[['玄天界', '低阶起点，机缘与危险并存（推荐）'], ['仙界', '高阶起点，开局即有名分与旧敌']].map(([n, d]) =>
         `<button class="opt ${createState.出生界 === n ? 'on' : ''}" data-set="出生界" data-v="${n}">${n}<span class="d">${d}</span></button>`).join('')}
-        </div>`;
+        </div>
+        ${realmField}`;
       foot.innerHTML = `<button class="btn primary" id="cr-next">下 一 步</button>`;
+      const rs = $('#f-realm');
+      if (rs) rs.addEventListener('input', (e) => (createState.境界 = e.target.value));
+      if (rs && rs.tagName === 'SELECT') rs.addEventListener('change', (e) => (createState.境界 = e.target.value));
     } else {
       const g = createState;
+      const M = FATE_MODES[FATE.mode];
       body.innerHTML = `
-        <div class="cr-step-label">第六步 / 六</div>
+        <div class="cr-step-label">${stepLabel}</div>
         <div class="cr-title">确 认 仙 缘</div>
         <div class="cr-hint">确认后生成初始状态快照，并进入第 0 回合的开局叙事。</div>
         <div class="card">
+          <div class="kv"><span class="k">命格</span><span class="v">${esc(M.名)}（气运演算 ${M.预算} 次）</span></div>
           <div class="kv"><span class="k">姓名</span><span class="v">${esc(g.姓名 || '陆沉')}</span></div>
           <div class="kv"><span class="k">性别</span><span class="v">${esc(g.性别)}</span></div>
           <div class="kv"><span class="k">出身</span><span class="v">${esc(g.出身 || '宗门外门')}</span></div>
           <div class="kv"><span class="k">灵根</span><span class="v">${g.灵根 ? g.灵根.品 + ' 灵根' : '未抽取'}</span></div>
+          <div class="kv"><span class="k">起始境界</span><span class="v">${M.境界 === '未修炼' ? '未修炼（引擎记为「凡 · DC 0」）' : esc(g.境界 || `按${g.出生界}推导`)}</span></div>
           <div class="kv"><span class="k">气运</span><span class="v">${esc(fateText(fatePickedList()).names) || '无'}</span></div>
-          <div class="kv"><span class="k">道侣</span><span class="v">${esc(g.道侣) || '天道自定'}</span></div>
+          <div class="kv"><span class="k">道侣</span><span class="v">${M.可自选道侣 ? (esc(g.道侣) || '天道自定') : '本档由天道安排'}</span></div>
           <div class="kv"><span class="k">出生界</span><span class="v">${esc(g.出生界)}</span></div>
         </div>`;
       foot.innerHTML = `<button class="btn" id="cr-edit">修 改</button><button class="btn primary" id="cr-start">开 始 仙 途</button>`;
@@ -567,7 +598,7 @@ import { retrieve } from './memory/retrieve.js';
     if (next) next.addEventListener('click', () => {
       if (createState.step === 0 && !createState.姓名.trim()) createState.姓名 = '陆沉';
       if (createState.step === 0 && !createState.出身) createState.出身 = '宗门外门';
-      createState.step = Math.min(STEPS.length - 1, createState.step + 1); renderCreate();
+      createState.step = Math.min(visibleSteps().length - 1, createState.step + 1); renderCreate();
     });
   }
   function rollRoot() {
@@ -585,6 +616,7 @@ import { retrieve } from './memory/retrieve.js';
    */
   function applyCreate() {
     createState.气运 = fatePickedList();
+    if (FATE_MODES[FATE.mode].境界 === '未修炼') createState.境界 = '未修炼';
     const fresh = applyCreateState(createState, { partnerPreset: (D.state && D.state.道侣) || {} });
 
     // 原地替换当前状态（state 被大量闭包共享，不能换引用）

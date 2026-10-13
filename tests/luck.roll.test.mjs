@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { rollFates, fateText, findFate, eroPool, FATE_MODES } from '../prototype/engine/fate.js';
 import { applyCreateState, migrateFates } from '../prototype/engine/create.js';
+import { parseRealm } from '../prototype/engine/rules.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REAL = JSON.parse(readFileSync(resolve(ROOT, 'prototype/data/luck.json'), 'utf8'));
@@ -144,6 +145,25 @@ test('findFate 认得四个池子，池外的名号返回 null', () => {
   assert.equal(findFate(REAL, REAL.ero.female[0].name).合欢, 'female');
   assert.equal(findFate(REAL, REAL.ero.neutral[0].name).合欢, 'neutral');
   assert.equal(findFate(REAL, '过目不忘'), null, '上一版自创的名号不该存在');
+});
+
+test('三档难度对整个创角表单的约束照卡', () => {
+  assert.deepEqual(
+    Object.values(FATE_MODES).map((m) => [m.可自选道侣, m.可自定义, m.境界]),
+    [[true, true, '输入'], [false, false, '下拉'], [false, false, '未修炼']],
+    '卡内 normal/hard 同时隐藏道侣自选与自定义气运（3131/3137、3123/3136）',
+  );
+});
+
+test('起始境界由难度档决定，且能盖过出生界的默认推导', () => {
+  // 境界标签由引擎规范化（state.normalize），所以断言看 DC 而不是看字面
+  const free = applyCreateState({ 姓名: '甲', 境界: '炼气三层', 出生界: '玄天界' });
+  assert.equal(parseRealm(free.主角.境界).dc, 3);
+  const xian = applyCreateState({ 姓名: '乙', 出生界: '仙界' });
+  assert.equal(parseRealm(xian.主角.境界).dc, 217, '没给境界时仍按出生界推导');
+  const hard = applyCreateState({ 姓名: '丙', 境界: '未修炼', 出生界: '仙界' });
+  assert.equal(parseRealm(hard.主角.境界).dc, 0, '逆天而行必须落到最低一档');
+  assert.ok(hard.主角.境界.startsWith('凡'), '卡内的"未修炼"不在十五境内，引擎规范化成"凡"（DC 0，机制等价）');
 });
 
 test('创角落盘带上卡内原文效果（描述要能被模型读到）', () => {

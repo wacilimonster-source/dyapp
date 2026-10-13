@@ -16,16 +16,19 @@ export function drawRoot(rng) {
 }
 
 /**
- * 三档难度对气运的影响。
+ * 三档难度对**整个创角表单**的影响（不只是气运演算）。
  * 重抽预算：simple 3 / normal 10 / hard 5（卡内 1246、3127、3143）
  * 候选个数：hard 5、其余 10（卡内 2948）；合欢模式下凡道固定只给 5（卡内 2936）
  * 真条：hard 永不出现（卡内 2844 的 `currentMode !== 'hard'`）
  * 自定义气运：卡内 normal/hard 直接隐藏该区块（3123、3136）
+ * 道侣自选：卡内 normal/hard 隐藏 companionSection（3131、3137）
+ * 起始境界：simple 自由填（realmInput）/ normal 下拉选（realmSelect，默认炼气期）
+ *            / hard 固定「未修炼」且禁用（3138-3139）
  */
 export const FATE_MODES = {
-  simple: { 名: '随缘', 预算: 3, 候选: 10, 可出真: true, 可自定义: true },
-  normal: { 名: '正途', 预算: 10, 候选: 10, 可出真: true, 可自定义: false },
-  hard: { 名: '逆天而行', 预算: 5, 候选: 5, 可出真: false, 可自定义: false },
+  simple: { 名: '随缘', 预算: 3, 候选: 10, 可出真: true, 可自定义: true, 可自选道侣: true, 境界: '输入' },
+  normal: { 名: '正途', 预算: 10, 候选: 10, 可出真: true, 可自定义: false, 可自选道侣: false, 境界: '下拉' },
+  hard: { 名: '逆天而行', 预算: 5, 候选: 5, 可出真: false, 可自定义: false, 可自选道侣: false, 境界: '未修炼' },
 };
 
 /** 合欢池按创角性别过滤（卡内 2938-2946）。 */
