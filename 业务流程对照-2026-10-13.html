@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>道渊独立版 · 业务流程全量对照（原卡 ↔ 程序）</title><style>
+body{background:#0d1220;color:#e8e6df;font:15px/1.8 system-ui,"Microsoft YaHei",sans-serif;margin:0;padding:34px 20px}
+main{max-width:1180px;margin:0 auto}h1{color:#d4af37;letter-spacing:3px;font-size:1.6rem}
+h2{color:#d4af37;font-size:1.14rem;margin:38px 0 10px;border-bottom:1px solid #2a3a5e;padding-bottom:6px}
+h3{color:#c58aff;font-size:.98rem;margin:22px 0 6px}
+table{border-collapse:collapse;width:100%;font-size:.85rem;margin:12px 0}
+th,td{border:1px solid #2a3a5e;padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#151d31;color:#c58aff;font-weight:600}
+code{color:#8fd0ff;background:#151d31;padding:1px 5px;border-radius:4px;font-size:.86em}
+.bad{color:#ff7a6b;font-weight:600}.ok{color:#6fd49a}.warn{color:#ffb066}.dim{color:#8b94a8}
+.box{border:1px solid #d4af37;border-radius:12px;padding:14px 18px;background:rgba(212,175,55,.07);margin:18px 0}
+.card{border:1px solid #2a3a5e;border-radius:12px;padding:14px 18px;background:#151d31;margin:14px 0}
+ul,ol{margin:6px 0;padding-left:22px}li{margin:6px 0}
+.tag{display:inline-block;border:1px solid #2a3a5e;border-radius:6px;padding:0 7px;font-size:.75rem;color:#8b94a8;margin-right:6px}
+</style></head><main>
+
+<h1>道渊独立版 · 业务流程全量对照</h1>
+<p class="dim"><small>2026-10-13 · 只读调查，<b>未改一行代码</b>。所有数字与清单均由实跑真实代码得出（非人工推断），出处标 <code>文件:行号</code> 或实测输出。</small></p>
+
+<div class="box"><b>交接框</b>
+<ul>
+<li><b>停在哪</b>：现状梳理完成，未动代码。文末「待裁决」7 项，回一行编号即可开工。</li>
+<li><b>最要紧的一条</b>：每回合发给模型的世界法则，<b>35 条只塞进 6 条</b>。这是当前"卡 ↔ 程序"最大的偏差，其余都是它的下游症状。</li>
+<li><b>不需要真机</b>：本项全部可在浏览器 + 真实代码里复现（复现命令见附录）。</li>
+</ul></div>
+
+<h2>一、说人话结论</h2>
+<div class="card">
+<p><b>1. 大方向是对的。</b>「引擎管账本、模型管演出」这条原则落到了实处，而且有几处比原卡更硬：
+原卡里"遭遇冷却每回合减 1"是让模型自己发变量更新，程序改成引擎独占；境界、时间、数值钳制、字段冻结也都是引擎说了算。
+模型想乱写数值会被拒或夹住。</p>
+<p><b>2. 但有一处系统性偏差，影响所有其它环节：</b>原卡把整套世界法则（35 条常驻规则）每回合都发给模型；
+程序因为预算只有 2240 字，实测每回合只塞进 <b>6 条</b>（境界、礼仪、战斗、战斗强制准则、神识、器物，最后一条还被截断），
+剩下 <b>30 条、29,880 字完全没进提示词</b> —— 包括<code>具体数值</code>、<code>DC点数判定</code>、<code>道心值设定</code>、
+<code>灵根</code>、<code>时间</code>、<code>突破丹药</code>、<code>恋爱</code>、<code>死亡</code>、<code>防全知</code>。
+后果是：<b>引擎按全套规则算账，模型只看过其中 6 条规则</b>，于是"数值算得对、故事写得不对"，全靠事后裁决层裁剪兜住。</p>
+<p><b>3. 卡里有、程序里彻底没做的硬机制有 3 块</b>：自由战斗结算（<code>engine/dice.js</code> 写了，但全仓没有任何地方引用它）、
+炼丹/炼器的成功率与产出、DC 压制三条律的实际效果（现在只是描述文字）。</p>
+<p><b>4. 程序自创、卡里没有的东西有一批</b>，方向都是好的（两段式裁决、离线兜底、成就、BM25 检索、往昔回顾、
+并发锁、ST 预设、存档加密同步）。这些不算偏差，算增量，列在第三节供你确认是不是你要的。</p>
+</div>
+
+<h2>二、每回合流程逐步对照</h2>
+<table><tr><th style="width:5%">步</th><th style="width:30%">原卡怎么做</th><th style="width:33%">程序怎么做</th><th style="width:8%">一致</th><th>差异与影响</th></tr>
+<tr><td>1<br>组装</td><td>ST 注入 30 条常驻法则 + 关键词命中条目 + <code>{{format_message_variable::stat_data}}</code> 全量变量快照（世界书条目「变量列表」order 200）</td><td>引擎分层 L0-L5（<code>narrator/prompt.js:44-105</code>）；常驻层预算 <code>L1=1400</code>→2240 字，实收 6/35 条；状态走 <code>stateSummary</code> 6 行摘要</td><td class="bad">否</td><td><b>本次最大偏差</b>。卡给模型全套法则 + 全量变量，程序只给 6 条法则 + 6 行摘要。变量部分其实等价（摘要含全部关键字段），法则部分是硬缺口</td></tr>
+<tr><td>2<br>随机</td><td>突破 / 心魔劫 / 雷劫 / 法则劫用 <code>{{random::}}</code> 脚本掷骰；遭遇对象由 <code>[RANDOM_NPC]</code> 正则抽签</td><td>引擎掷骰 <code>turn.js:63</code>（<code>rng()&lt;p</code>，概率表 <code>rules.js:178-186</code>）；遭遇按境界×场景加权抽 <code>encounter.js:65-86</code></td><td class="ok">是</td><td>等价且更可复现（可注入固定随机源做测试）</td></tr>
+<tr><td>3<br>遭遇冷却</td><td>提示词让模型自己检查 <code>世界.遭遇冷却</code> 并自发 <code>delta:-1</code>，zod 只负责 clamp 0~15</td><td>引擎独占：<code>encounter.js:47-53</code> 每回合 −1 / 归零后抽取并重置</td><td class="warn">程序更硬</td><td>有意的不跟随。原卡这套经常漏发 patch，引擎接管是对的</td></tr>
+<tr><td>4<br>叙事</td><td>模型生成正文，禁止出现 DC 等字样</td><td>模型流式生成 <code>turn.js:184</code>，实时截断状态标记 <code>:177</code>，事后 <code>sanitizeNarrative</code> 剥 XML <code>:188</code></td><td class="ok">是</td><td>一致</td></tr>
+<tr><td>5<br>内容审查</td><td><code>&lt;logic_check&gt;</code> 三重人格 + 30 条铁律，<b>但卡 v5.3 已把「合理性审查」条目 enabled=False</b></td><td>该条目作为 tier3 常驻候选保留（<code>index.js:50</code>），实测因预算排不到而等于不生效</td><td class="ok">是</td><td>两边都等于没做。<b>不要把它当缺陷补</b>——卡作者自己关掉的</td></tr>
+<tr><td>6<br>变量更新</td><td>模型出 <code>&lt;JSONPatch&gt;</code> → <code>script_ZOD.js</code> 校验 + <code>_.clamp(0,100)</code> + 截断（机遇 takeRight(20)、玉简 takeRight(100)、储物袋剔除数量 0）→ 写 MVU</td><td>模型出 effects（第二次独立调用，<code>client.js:54</code>）→ <code>parse.js</code> 校验 → <code>effects.js</code> 拒绝/夹取 → <code>applyAll</code> 落地 → <code>normalize</code> 截断</td><td class="ok">是</td><td>机制同构（都是"模型提议、程序落笔"）。程序还多了卡没有的守卫：境界/时间引擎独占、原型污染守卫、路径数量上限</td></tr>
+<tr><td>7<br>渲染</td><td>正则从 <code>Mvu.getMvuData()</code> 纯渲染状态栏，零计算</td><td><code>renderHUD</code> / <code>renderSidebar</code> 从 <code>state</code> 纯渲染</td><td class="ok">是</td><td>一致</td></tr>
+<tr><td>8<br>历史清理</td><td>正则 <code>promptOnly=True</code> 把历史里的变量更新块剥掉（发送前）</td><td>回合里根本不存 patch，只存正文 + 状态快照</td><td class="ok">是</td><td>做法不同，效果一致</td></tr>
+<tr><td>9-11<br>程序自增</td><td class="dim">卡里没有</td><td>成就判定 8 条（<code>achievements.js</code>）；往昔回顾抽取式摘要（<code>recap.js</code>）；BM25 检索 + 重排；存档原子写与 GitHub 加密同步</td><td class="dim">增量</td><td>确认这些是你想要的方向即可，不算偏差</td></tr>
+</table>
+
+<h2>三、归属总账：什么归模型，什么归程序</h2>
+<table><tr><th style="width:16%">归属</th><th>清单</th></tr>
+<tr><td class="bad">大模型生成</td><td>正文叙事；<b>所有状态变更的提议</b>（effects）；场景字段（地点 / 危机 / 天气 / 灵气）；行动建议选项（≤4 条）；新增人物 / 机遇 / 道侣 / 灵宠 / 绝色榜的<b>内容</b></td></tr>
+<tr><td class="ok">引擎确定性</td><td>时间推进（模型回传的时间被整体丢弃）；境界序与 DC 查表；突破判定与晋阶；修炼产出；遭遇冷却与抽取；数值 clamp；字段冻结（性格等）；成就；创角的灵根 / 气运抽取与真条 5%；检索与预算；存档原子写与换盘回滚</td></tr>
+<tr><td class="warn">混合（模型提议 + 引擎可否决）</td><td>场景走白名单 + 危机枚举 + 40 字裁剪；effects 路径与数量上限（≤40）；set 境界由引擎重查 DC；delta 改境界 / 境界DC 直接拒</td></tr>
+<tr><td class="bad">卡有 · 程序没做</td><td>自由战斗 / 对决结算（<code>engine/dice.js</code> 无人引用）；炼丹 / 炼器成功率与产出；DC 压制三条律（精神灵压 / 绝对压制 / 不可逆伤害）的实际效果；机缘"无代价不机缘"的结算；灵根多属性（<code>create.js:48</code> 硬编"单灵根"）；模糊数值口径传给模型</td></tr>
+<tr><td class="dim">程序自创 · 卡没有</td><td>两段式（流式叙事 + 独立 JSON 裁决）；离线兜底叙事；成就；BM25 检索与 token 预算；往昔回顾与归档；回合并发锁；ST 预设双模式与宏；双模型槽；GitHub 同步与加密；预设反向导出</td></tr>
+</table>
+
+<h2>四、问题清单（按优先级）</h2>
+
+<h3><span class="tag">P0</span>1. 世界法则每回合只进 6 / 35 条</h3>
+<table><tr><td style="width:12%">位置</td><td><code>prototype/narrator/prompt.js:49</code>（<code>maxChars = L1×1.6 = 2240</code>）、<code>prototype/memory/index.js:112-143</code>（<code>constantText</code>）</td></tr>
+<tr><td>现象</td><td>实跑 <code>constantText</code>：35 条常驻候选里只收 6 条 —— 境界 / 礼仪 / 战斗 / 战斗强制准则 / 神识 / 器物（器物被截断）。<b>未进入的 30 条合计 29,880 字</b></td></tr>
+<tr><td>根因</td><td>常驻条目是按卡内原文整条搬来的，单条最长 5,024 字；预算只有 2,240 字；排序按 tier + 卡内 <code>insertion_order</code>，<b>不是按"模型每回合是否真的需要"</b></td></tr>
+<tr><td>影响</td><td>模型不知道 DC 压制阶梯、不知道五大资源的口径、不知道道心档位、不知道灵石换算与购买力 → 叙事与账本对不上，全靠裁决层事后夹；玩家侧的可感知症状是"数值没扣错，但故事里说的话不合设定"</td></tr>
+<tr><td>修后</td><td>把 35 条原文压成一份<b>由 <code>rules.js</code> 的表自动生成</b>的规则摘要（数值口径 / DC 阶梯 / 道心档 / 灵石换算 / 模糊感知对照），约 1,200–1,500 字，与引擎同源、永不脱节</td></tr>
+<tr><td>一句话否决</td><td>回「L1 不动」</td></tr></table>
+
+<h3><span class="tag">P0</span>2. 自由战斗没有结算，判定模块是死代码</h3>
+<table><tr><td style="width:12%">位置</td><td><code>prototype/engine/dice.js</code>（实测全仓除自身外<b>零引用</b>）；战斗意图在 <code>turn.js:34-96</code> 里不分支</td></tr>
+<tr><td>现象</td><td>战斗类行动 = 模型写正文 + 模型提议掉多少血，引擎只做 clamp。没有任何"谁赢"的确定性判定</td></tr>
+<tr><td>根因</td><td>卡里战斗也是模型裁量（只有 DC 查表推理，无掷骰），所以这不算退步；但独立版已经有引擎掷骰能力，却没用上</td></tr>
+<tr><td>修后</td><td>战斗意图 → 引擎按 DC 差 + 灵根 / 器物加成掷骰 → 把胜负与伤势作为<b>硬事实</b>喂给模型描写（与突破判定同一条路子）</td></tr>
+<tr><td>一句话否决</td><td>回「战斗继续交给模型」</td></tr></table>
+
+<h3><span class="tag">P1</span>3. 卡内已停用的条目还在候选池，而且排序比启用中的核心规则靠前</h3>
+<table><tr><td style="width:12%">位置</td><td><code>prototype/memory/index.js:72</code>：<code>(e.enabled !== false || e.constant)</code> —— 未启用但常驻的条目被放行</td></tr>
+<tr><td>现象</td><td>卡内停用 25 条，其中 <b>9 条进了 L1 候选池</b>；「玄天界灵石体系」是 tier0，排在<b>启用中</b>的 <code>时间</code> / <code>DC点数判定</code> / <code>道心值设定</code> 之前</td></tr>
+<tr><td>影响</td><td>现在因为预算不够而没暴露。<b>但只要按上面 P0 放宽预算，就会立刻把作者关掉的内容塞进提示词，并挤掉启用中的核心规则</b> —— 这是个埋着的雷</td></tr>
+<tr><td>修后</td><td>候选池尊重 <code>enabled</code>（或至少把停用条目排到最后）</td></tr>
+<tr><td>一句话否决</td><td>回「停用条目留着」</td></tr></table>
+
+<h3><span class="tag">P1</span>4. 炼丹 / 炼器只有存储壳，没有判定也没有规则注入</h3>
+<table><tr><td style="width:12%">位置</td><td><code>engine/state.js:39,99</code>（只有 <code>emptyCraft</code> / <code>normalizeCraft</code>）；规则原文「突破丹药」1,731 字在候选池但进不去提示词</td></tr>
+<tr><td>修后</td><td>两条路：A 补真判定（材料表 + 成功率 + 产出）；B 先把这条规则注入，让模型按卡演（成本几乎为零）</td></tr>
+<tr><td>一句话否决</td><td>回「炼丹先不管」</td></tr></table>
+
+<h3><span class="tag">P1</span>5. 提示词预览看不出"少了 30 条规则"</h3>
+<table><tr><td style="width:12%">位置</td><td><code>app.js:1593-1597</code>：只把 <code>truncated</code>（被截断的）写进告警栏</td></tr>
+<tr><td>现象</td><td><code>constantText</code> 其实已经返回 <code>included</code> / <code>total</code>，但 UI 不显示"根本没收录"的条目 —— 所以这个缺口在界面上<b>完全隐形</b></td></tr>
+<tr><td>修后</td><td>告警栏加一行：「常驻法则 35 条只进了 6 条，未进入：DC点数判定、具体数值、道心值设定…」</td></tr>
+<tr><td>一句话否决</td><td>回「不用显示」</td></tr></table>
+
+<h3><span class="tag">P2</span>6. 模糊数值口径没传给模型</h3>
+<table><tr><td style="width:12%">位置</td><td><code>rules.js:224-236</code> 的 <code>vague()</code> 只被 HUD 用（<code>app.js:648</code>，神视模式）</td></tr>
+<tr><td>现象</td><td>卡要求正文用"充盈 / 稳固"这类模糊语，且模糊对照表在「具体数值」条目里 —— 而那条恰好没进提示词。发给模型的 <code>stateSummary</code> 是精确数字</td></tr>
+<tr><td>修后</td><td><code>stateSummary</code> 的数值口径跟随神视模式：关时发模糊档，开时发精确值</td></tr>
+<tr><td>一句话否决</td><td>回「给模型精确值更好」</td></tr></table>
+
+<h3><span class="tag">P2</span>7. 灵根硬编码"单灵根"</h3>
+<p class="dim"><code>engine/create.js:48</code>：无论抽到什么品阶，一律写成「X品 · 单灵根」。卡内灵根有多属性组合规则。修后：把灵根形态也纳入抽取。一句话否决：回「灵根先只要品阶」。</p>
+
+<h3><span class="tag">不是缺陷</span>8. 三重人格审查 / 状态栏 XML</h3>
+<p class="dim">这两块卡 v5.3 自己就 <code>enabled=False</code>（实测：「合理性审查」「状态栏」两条均停用）。程序里前者作为 tier3 候选保留、后者被 <code>PROMPT_EXCLUDED</code> 排除，<b>都不生效，与卡一致</b>。列在这里是为了别被当成漏做而补回来。</p>
+
+<h2>五、待裁决（回一行编号即可）</h2>
+<div class="card">
+<p><b>① 世界法则怎么补</b><br>
+A）由 <code>rules.js</code> 的表<b>自动生成一份压缩规则摘要</b>注入（约 1,300 字，与引擎同源，永不脱节）（推荐）<br>
+B）单纯把 L1 预算放宽到 6,000 字，原文塞进去（每回合多约 3-4k token，成本直接涨）<br>
+C）不动</p>
+<p><b>② 战斗要不要引擎结算</b><br>A）接线掷骰，胜负与伤势作为硬事实喂给模型　B）继续交给模型裁量</p>
+<p><b>③ 炼丹 / 炼器</b><br>A）补真判定（材料 + 成功率 + 产出）　B）先把规则条目注入，让模型按卡演　C）不动</p>
+<p><b>④ 停用条目</b><br>A）候选池尊重 <code>enabled</code>　B）排到最后但保留　C）不动</p>
+<p><b>⑤ 预览可见性</b><br>A）告警栏列出"未进入提示词的规则"　B）不动</p>
+<p><b>⑥ 模糊数值</b><br>A）发给模型的摘要跟随神视模式　B）保持精确值</p>
+<p><b>⑦ 灵根多属性</b><br>A）纳入抽取　B）只要品阶</p>
+<p class="dim">建议顺序：<b>①+⑤ 一起做</b>（同一条链路，① 治本、⑤ 让你看得见效果），然后 ④（① 放宽后必须做，否则停用内容会挤进来），再 ②③。</p>
+</div>
+
+<h2>附录：复现命令与实测输出</h2>
+<pre style="background:#151d31;border:1px solid #2a3a5e;border-radius:10px;padding:12px;font-size:.8rem;overflow:auto">
+$ node --input-type=module -e "…constantText(buildIndex(wb,{realm:'玄天界'}),{maxChars:2240})"
+L1 预算 2240 字 → 实收 5 / 35 条，用了 2240 字
+实际进入每回合提示词的常驻条目： 境界 / 礼仪 / 战斗 / 战斗强制准则 / 神识 / 器物（截断）
+被截断的： 器物
+缺 30 条 / 合计 29,880 字
+停用条目进入 L1 候选池的有 9 条： 玄天界灵石体系、合理性审查、玄天界介绍、玄天界主要势力与组织、
+  玄天界核心规则、玄天界周期性秘境、玄天界关键人物、玄天界前期保护机制、玄天界宗门体系
+
+$ grep -rn "dice" --include=*.js prototype | grep -v "^prototype/engine/dice.js"
+（空 —— dice.js 全仓零引用）
+
+$ 世界书统计：总 319 条 · 常驻 55 · 卡内停用 25
+$ 成就：8 条（引擎判定）
+$ 气运：609 条纯文本注入，引擎不改任何数值（与卡一致）
+</pre>
+<p class="dim"><small>本轮修正了自己一处早先的错误推断：曾以为"19,875 字停用内容正在被注入"，实跑 <code>constantText</code> 后证明它们只是进了候选池、因预算排不到而没进提示词。报告里以实跑结果为准。</small></p>
+</main></body></html>
