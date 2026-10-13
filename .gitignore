@@ -44,3 +44,6 @@ local.properties
 # 一次性临时脚本与临时文件（批量改文件、写提交信息那种）：不进仓库
 # 用 tools/_* 通配，免得再出现"临时文件被 git add -A 顺手带上"的情况
 tools/_*
+
+# 图像生成的落地点（候选图、拼版预览）：定稿会拷进 docs/图标候选 与 src-tauri/icons
+vibe_images/

@@ -96,6 +96,47 @@ jobs:
           # 收尾自查：确认它对外是"已发布、非草稿"，免得又是"流程全绿但 Release 看不见"
           gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
 
+  # Windows 桌面版（exe 安装包）挂到同一个 Release。
+  # 与 apk 任务同样 continue-on-error：产物失败不阻塞发版，重跑 tag 即可补。
+  windows:
+    needs: release
+    continue-on-error: true
+    runs-on: windows-latest
+    env:
+      TAG_REF: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: 安装 tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: 构建 Windows 安装包（nsis）
+        working-directory: app/src-tauri
+        run: cargo tauri build --bundles nsis
+
+      # 产品名是中文，Tauri 出来的文件名跟着是中文 —— 改名成纯 ASCII 再挂，
+      # 免得附件下载链接与「检查更新」里的文件名不好处理。
+      - name: 挂到 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          EXE="$(find app/src-tauri/target/release/bundle/nsis -name '*.exe' | head -1)"
+          if [ -z "$EXE" ]; then echo "::error::没找到 nsis 产物"; exit 1; fi
+          OUT="dyapp-${TAG_REF#v}-windows-x64-setup.exe"
+          cp "$EXE" "$OUT"
+          ls -lh "$OUT"
+          gh release upload "$TAG_REF" "$OUT" --clobber
+
   # 安卓 APK 一并挂到 Release 附件（客户端「检查更新」打开的就是这个 Release）。
   #
   # 两点说明：
