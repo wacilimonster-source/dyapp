@@ -8,8 +8,8 @@
 import { normalize as normalizeState, snapshot } from './engine/state.js';
 import { runTurn } from './engine/turn.js';
 import { daoStage, vague, crisisLevel, parseRealm, realmIndex, DC_TIERS, REALM_ORDER } from './engine/rules.js';
-import { drawRootTier, applyCreateState, openingTurn, migrateFates } from './engine/create.js';
-import { rollFates, fateText, findFate, FATE_MODES, eroPool } from './engine/fate.js';
+import { applyCreateState, openingTurn, migrateFates } from './engine/create.js';
+import { rollFates, fateText, findFate, FATE_MODES, eroPool, drawRootFull } from './engine/fate.js';
 import { evaluateAchievements, ACHIEVEMENTS } from './engine/achievements.js';
 import { buildRecap } from './memory/recap.js';
 import { buildIndex } from './memory/index.js';
@@ -157,6 +157,7 @@ import { retrieve } from './memory/retrieve.js';
     { k: '探索', i: '🧭', hot: true },
     { k: '修炼', i: '🧘', hot: true },
     { k: '突破', i: '⚡', hot: true },
+    { k: '斗法', i: '⚔', hot: true },
     { k: '交流', i: '💬' },
   ];
   const MORE_ACTS = [
@@ -457,8 +458,11 @@ import { retrieve } from './memory/retrieve.js';
           <div><div class="val" id="root-val" style="${createState.灵根 ? 'color:' + createState.灵根.色 : ''}">${createState.灵根 ? createState.灵根.品 : '？'}</div>
           <div class="cap">${createState.灵根 ? '灵根品阶' : '待 抽 取'}</div></div>
         </div></div>
-        ${createState.灵根 ? `<div class="card"><div class="kv"><span class="k">修炼产出</span><span class="v">${createState.灵根.修炼}</span></div>
-          <div class="kv"><span class="k">出现概率</span><span class="v">${(createState.灵根.概率 * 100).toFixed(0)}%</span></div></div>` : ''}`;
+        ${createState.灵根 ? `<div class="card"><div class="kv"><span class="k">灵根</span><span class="v">${esc(createState.灵根.文本 || createState.灵根.品)}</span></div>
+          <div class="kv"><span class="k">属性类别</span><span class="v">${esc(createState.灵根.类别 || '五行')}${createState.灵根.类别 === '异种' ? '（五行变异，威力独特）' : createState.灵根.类别 === '天道' ? '（传说之属，拥有逆天之能）' : ''}</span></div>
+          <div class="kv"><span class="k">修炼产出</span><span class="v">${createState.灵根.修炼}</span></div>
+          <div class="kv"><span class="k">出现概率</span><span class="v">${(createState.灵根.概率 * 100).toFixed(0)}%</span></div>
+          <div class="cr-hint" style="margin-top:6px">功法须与灵根属性相合；跨属性修炼会灵气冲突，轻则修为停滞，重则经脉尽毁。</div></div>` : ''}`;
       foot.innerHTML = `<button class="btn" id="cr-roll">${createState.灵根 ? '重 抽' : '抽 取 灵 根'}</button>
         <button class="btn primary" id="cr-next" ${createState.灵根 ? '' : 'disabled style="opacity:.5"'}>下 一 步</button>`;
       $('#cr-roll').addEventListener('click', rollRoot);
@@ -577,7 +581,7 @@ import { retrieve } from './memory/retrieve.js';
           <div class="kv"><span class="k">姓名</span><span class="v">${esc(g.姓名 || '陆沉')}</span></div>
           <div class="kv"><span class="k">性别</span><span class="v">${esc(g.性别)}</span></div>
           <div class="kv"><span class="k">出身</span><span class="v">${esc(g.出身 || '宗门外门')}</span></div>
-          <div class="kv"><span class="k">灵根</span><span class="v">${g.灵根 ? g.灵根.品 + ' 灵根' : '未抽取'}</span></div>
+          <div class="kv"><span class="k">灵根</span><span class="v">${g.灵根 ? esc(g.灵根.文本 || g.灵根.品) : '未抽取'}</span></div>
           <div class="kv"><span class="k">起始境界</span><span class="v">${M.境界 === '未修炼' ? '未修炼（引擎记为「凡 · DC 0」）' : esc(g.境界 || `按${g.出生界}推导`)}</span></div>
           <div class="kv"><span class="k">气运</span><span class="v">${esc(fateText(fatePickedList()).names) || '无'}</span></div>
           <div class="kv"><span class="k">道侣</span><span class="v">${M.可自选道侣 ? (esc(g.道侣) || '天道自定') : '本档由天道安排'}</span></div>
@@ -604,8 +608,9 @@ import { retrieve } from './memory/retrieve.js';
   function rollRoot() {
     createState.spinning = true; renderCreate();
     setTimeout(() => {
-      // 概率表与修炼产出同源（engine/rules.js），色只是界面装饰
-      const tier = drawRootTier(Math.random);
+      // 概率表与修炼产出同源（engine/rules.js），色只是界面装饰；
+      // 属性形态（五行/异种/天道）由 engine/fate.js 一起抽出
+      const tier = drawRootFull(Math.random);
       createState.灵根 = { ...tier, 色: ROOT_COLORS[tier.品] || '#9aa3b5' };
       createState.spinning = false; renderCreate();
     }, 900);
@@ -805,6 +810,7 @@ import { retrieve } from './memory/retrieve.js';
     if (kind === '面板') { openPanel(curPanel); return; }
     if (kind === '探索') return freeText('四处探索，看看这附近有什么。');
     if (kind === '修炼') return cultivate();
+    if (kind === '斗法') return duel();
     if (kind === '交流') return freeText('去找镇上的修士聊聊天。');
   }
   const REPLIES = [
@@ -1093,6 +1099,17 @@ import { retrieve } from './memory/retrieve.js';
   function cultivate() {
     // 修为增量、耗时天数全部由引擎算（engine/rules.js 的灵根品阶表）
     return freeText('寻一处僻静，闭关修炼。', 'cultivate');
+  }
+
+  function duel() {
+    // 胜负与伤势由引擎掷骰定死（engine/combat.js），模型只写过程；
+    // 与突破一样走判定演出，玩家先看到"这一战的结果"，再等正文。
+    if (turnInFlight) return null;
+    const text = '出手，正面斗法。';
+    turns.push({ role: 'user', text });
+    appendTurn(turns[turns.length - 1]);
+    renderHUD();
+    return runEngineTurn({ kind: 'duel', text }, { holdForJudge: true });
   }
 
   async function breakthrough() {
@@ -1591,10 +1608,15 @@ import { retrieve } from './memory/retrieve.js';
     const layers = (plan.meta.layers || []).map((l) => `${esc(l.name)}:${l.tokens == null ? '?' : l.tokens}`).join('　');
     const warns = plan.warnings || [];
     // 常驻法则被截断的条目：写进告警栏，不然用户看不出"少了一截"
+    const l1 = (plan.meta.layers || []).find((l) => l.name === 'L1') || {};
     const cut = (plan.meta.layers || [])
       .filter((l) => (l.truncated || []).length)
       .flatMap((l) => l.truncated);
     if (cut.length) warns.push(`以下常驻条目超出预算被截断（保留开头）：${cut.join('、')}`);
+    // 一条都没塞进来的规则：这是"模型不知道设定"的直接来源，必须显式报出来
+    if ((l1.skipped || []).length) {
+      warns.push(`世界法则 ${l1.total} 条只塞进 ${l1.included} 条（${l1.used || 0} 字预算），本回合模型看不到：${l1.skipped.join('、')}`);
+    }
     $('#judge-box').innerHTML = `<h3>将 发 送 的 提 示 词</h3>
       <div class="cr-hint" style="text-align:left">${plan.meta.mode === 'preset' ? '预设「' + esc(plan.meta.presetName || '') + '」' : '默认对话'} · 共 ${plan.messages.length} 条 · 约 ${plan.meta.totalTokens} tok</div>
       <div style="max-height:46vh;overflow:auto;text-align:left;margin:10px 0">${rows}</div>

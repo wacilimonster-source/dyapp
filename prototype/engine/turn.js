@@ -16,6 +16,7 @@ import {
   parseRealm,
 } from './rules.js';
 import { sceneClass, tick as encounterTick, pickCandidate } from './encounter.js';
+import { resolveDuel, isCombatIntent } from './combat.js';
 import { advanceTime, deriveTime, TIME_SLOTS, SEASONS } from './time.js';
 import { retrieve } from '../memory/retrieve.js';
 import { composeArbiter } from '../narrator/prompt.js';
@@ -93,11 +94,20 @@ export function resolveIntent(action, state, rng) {
     };
   }
 
+  if (kind === 'duel' || (kind === 'free' && isCombatIntent(action.text))) {
+    // 斗法：胜负与伤势由引擎定成硬事实，模型只写过程（卡里这块是模型裁量）
+    const c = resolveDuel({ state, text: action.text || '', rng });
+    effects.push(...c.effects);
+    hints.push(...c.hints);
+    advanceTime(state.世界, 1);
+    hints.push(`时间推进到：${state.世界.当前时间}。`);
+    return { hints, effects, days: 1, preEffects: true, duel: c.duel };
+  }
+
   advanceTime(state.世界, 0);
   hints.push(`时间推进到：${state.世界.当前时间}。`);
   return { hints, effects, days: 0, preEffects: false };
 }
-
 /* ------------------------- 主流程 ------------------------- */
 
 /**

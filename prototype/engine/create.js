@@ -9,12 +9,7 @@
 
 import { clamp } from '../core/clamp.js';
 import { emptyState, normalize } from './state.js';
-import { drawRoot, findFate } from './fate.js';
-
-/** 抽灵根品阶（概率表在 engine/rules.js，与修炼产出同源）。 */
-export function drawRootTier(rng) {
-  return drawRoot(rng);
-}
+import { findFate } from './fate.js';
 
 /** 道侣默认模板；没有预设设定时兜底用。 */
 export function defaultPartnerTemplate() {
@@ -45,7 +40,8 @@ export function applyCreateState(g, opts = {}) {
   if (g.出生界 === '仙界') fresh.主角.境界 = '真仙一层';
   // 起始境界由难度档决定（卡内：simple 自由填 / normal 下拉 / hard 固定"未修炼"）
   if (g.境界) fresh.主角.境界 = g.境界;
-  fresh.主角.灵根 = g.灵根 ? `${g.灵根.品} · 单灵根` : '凡品 · 单灵根';
+  // 灵根 = 品阶（卡内概率表）+ 属性形态（卡内「灵根」条目的五行/异种/天道）
+  fresh.主角.灵根 = g.灵根 ? (g.灵根.文本 || `${g.灵根.品} · 单灵根`) : '凡品 · 单灵根';
   if (g.出身 === '寒门散修') fresh.主角.道心 = 58;
   if (g.出身 === '宗门外门') fresh.主角.宗门贡献 = 120;
   if (g.灵根 && g.灵根.品 === '天品') fresh.主角.道心 = clamp(fresh.主角.道心 + 10, 0, 100);

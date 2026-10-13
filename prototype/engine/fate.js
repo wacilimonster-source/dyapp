@@ -15,6 +15,62 @@ export function drawRoot(rng) {
   return pickByChance(rng, ROOT_TIERS);
 }
 
+/* ------------------------- 灵根属性形态（卡内「灵根」条目） ------------------------- */
+
+/** 卡内三档属性类别：五行最常见，异种由五行变异、威力独特，天道只存在于传说。 */
+export const ROOT_ATTRS = Object.freeze({
+  五行: ['金', '木', '水', '火', '土'],
+  异种: ['风', '雷', '冰'],
+  天道: ['时', '空', '轮回'],
+});
+
+/** 属性条数：品级越高越纯。卡内明写「凡品：四至五种属性灵根混杂」。 */
+export const ROOT_ATTR_COUNT = Object.freeze({
+  天品: [1, 1], 地品: [1, 1], 玄品: [2, 2], 黄品: [3, 3], 凡品: [4, 5],
+});
+
+/**
+ * 变异概率（卡内没给数字，属自创项，已在报告里标注）。
+ * 天道灵根只在天品里再掷一次，概率见 HEAVEN_CHANCE。
+ */
+export const MUTATION_CHANCE = Object.freeze({
+  天品: 0.30, 地品: 0.15, 玄品: 0.06, 黄品: 0.02, 凡品: 0,
+});
+export const HEAVEN_CHANCE = 0.02;
+
+const FORM_NAME = ['无灵根', '单灵根', '双灵根', '三灵根', '四灵根', '五灵根'];
+
+/**
+ * 给定品阶，抽出一套属性。
+ * @param {string} 品 天品/地品/玄品/黄品/凡品
+ * @param {() => number} rng
+ * @returns {{属性:string[], 形态:string, 类别:'五行'|'异种'|'天道'}}
+ */
+export function rollRootForm(品, rng = Math.random) {
+  const [lo, hi] = ROOT_ATTR_COUNT[品] || ROOT_ATTR_COUNT.凡品;
+  const n = lo + Math.floor(rng() * (hi - lo + 1));
+  let 类别 = '五行';
+  if (品 === '天品' && rng() < HEAVEN_CHANCE) 类别 = '天道';
+  else if (rng() < (MUTATION_CHANCE[品] ?? 0)) 类别 = '异种';
+  const pool = [...ROOT_ATTRS[类别]];
+  const 属性 = [];
+  while (属性.length < n && pool.length) 属性.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
+  // 异种/天道池不够 n 条时（如天道只有 3 个而凡品要 4-5 条），用五行补齐
+  while (属性.length < n) {
+    const rest = ROOT_ATTRS.五行.filter((a) => !属性.includes(a));
+    if (!rest.length) break;
+    属性.push(rest[Math.floor(rng() * rest.length)]);
+  }
+  return { 属性, 形态: FORM_NAME[Math.min(属性.length, 5)], 类别 };
+}
+
+/** 一次完整的灵根抽取：品阶（卡内概率表）+ 属性形态。 */
+export function drawRootFull(rng = Math.random) {
+  const tier = drawRoot(rng);
+  const form = rollRootForm(tier.品, rng);
+  return { ...tier, ...form, 文本: `${tier.品} · ${form.形态}（${form.属性.join('')}）` };
+}
+
 /**
  * 三档难度对**整个创角表单**的影响（不只是气运演算）。
  * 重抽预算：simple 3 / normal 10 / hard 5（卡内 1246、3127、3143）

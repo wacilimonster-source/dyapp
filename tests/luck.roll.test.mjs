@@ -11,7 +11,8 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { rollFates, fateText, findFate, eroPool, FATE_MODES } from '../prototype/engine/fate.js';
+import { rollFates, fateText, findFate, eroPool, FATE_MODES, rollRootForm, drawRootFull, ROOT_ATTRS } from '../prototype/engine/fate.js';
+import { rootTier, cultivate } from '../prototype/engine/rules.js';
 import { applyCreateState, migrateFates } from '../prototype/engine/create.js';
 import { parseRealm } from '../prototype/engine/rules.js';
 
@@ -190,4 +191,53 @@ test('旧档气运按新池重建：池里没有的丢掉，同名取原文（�
   assert.deepEqual(kept, ['不化骨']);
   assert.ok(s.主角.气运['不化骨'].效果.includes('关节僵硬'), '描述应被换回卡内原文（含代价）');
   assert.ok(!s.主角.气运['过目不忘']);
+});
+
+/* ------------------- 灵根属性形态（裁决⑦A） ------------------- */
+
+test('灵根不再是硬编码的"单灵根"：品阶决定属性条数', () => {
+  const seq = (n) => { let i = 0; return () => (i < n ? 0.5 : (i++ % 2 ? 0.99 : 0.01)); };
+  assert.equal(rollRootForm('天品', seq(0)).属性.length, 1);
+  assert.equal(rollRootForm('地品', seq(0)).属性.length, 1);
+  assert.equal(rollRootForm('玄品', seq(0)).属性.length, 2);
+  assert.equal(rollRootForm('黄品', seq(0)).属性.length, 3);
+  // 卡内原文：凡品「四至五种属性灵根混杂」
+  assert.ok([4, 5].includes(rollRootForm('凡品', seq(0)).属性.length));
+});
+
+test('属性只出自卡内三类：五行 / 异种（风雷冰）/ 天道（时空轮回）', () => {
+  const all = [...ROOT_ATTRS.五行, ...ROOT_ATTRS.异种, ...ROOT_ATTRS.天道];
+  for (const 品 of ['天品', '地品', '玄品', '黄品', '凡品']) {
+    for (let k = 0; k < 40; k++) {
+      const f = rollRootForm(品, Math.random);
+      assert.ok(f.属性.every((a) => all.includes(a)), `抽出界外属性：${f.属性}`);
+      assert.ok(['五行', '异种', '天道'].includes(f.类别));
+      assert.equal(new Set(f.属性).size, f.属性.length, '同一次抽取不该重复');
+    }
+  }
+});
+
+test('天道灵根只可能出现在天品，且比异种更罕见', () => {
+  let 天道 = 0; let 异种 = 0;
+  for (let i = 0; i < 4000; i++) {
+    const f = rollRootForm('凡品', Math.random);
+    if (f.类别 === '天道') 天道++;
+  }
+  assert.equal(天道, 0, '凡品不该抽到天道灵根');
+  for (let i = 0; i < 4000; i++) {
+    const f = rollRootForm('天品', Math.random);
+    if (f.类别 === '天道') 天道++;
+    if (f.类别 === '异种') 异种++;
+  }
+  assert.ok(异种 > 天道, `天品里异种应比天道常见：异种 ${异种} 天道 ${天道}`);
+});
+
+test('整条灵根文本能被 rootTier() 认出品阶（修炼产出表不掉链子）', () => {
+  for (let i = 0; i < 200; i++) {
+    const r = drawRootFull(Math.random);
+    assert.ok(r.文本.startsWith(r.品), `文本开头必须是品阶：${r.文本}`);
+    assert.equal(rootTier(r.文本), r.品, '品阶解析必须与抽取一致');
+    assert.ok(cultivate({ rootText: r.文本, realmLabel: '炼气三层' }).修为增量 > 0,
+      '按新文本仍能算出修炼产出');
+  }
 });
