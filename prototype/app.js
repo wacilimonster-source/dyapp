@@ -1097,6 +1097,108 @@ import { retrieve } from './memory/retrieve.js';
     }
   }
 
+  /* ---------- 可用模型列表：按密钥拉回来，点选填入，不要求手输 ---------- */
+  const MODEL = { list: [], forBase: '', triedFor: '', loading: false, error: '' };
+  const MODEL_MAX = 60;
+
+  function modelKeyOfSettings() {
+    const p = LLM.settings && LLM.settings.provider;
+    return p ? `${p.baseUrl}|${p.endpointPath}` : '';
+  }
+
+  /** 这个渠道能不能拉列表：要壳在，且（已存 Key 或该渠道免 Key）。 */
+  function modelFetchAllowed() {
+    if (!window.DYApp.available()) return false;
+    const pr = LLM.settings && LLM.settings.provider;
+    if (pr && pr.requiresApiKey === false) return true;
+    return !!(LLM.secrets && LLM.secrets.llmKeySet);
+  }
+
+  async function fetchModels() {
+    if (!modelFetchAllowed() || MODEL.loading) return;
+    const key = modelKeyOfSettings();
+    MODEL.loading = true; MODEL.triedFor = key; MODEL.error = '';
+    renderModelArea();
+    try {
+      MODEL.list = (await window.DYApp.llm.models()) || [];
+      MODEL.forBase = key;
+    } catch (e) {
+      MODEL.list = []; MODEL.forBase = '';
+      MODEL.error = String((e && e.message) || e);
+    }
+    MODEL.loading = false;
+    renderModelArea();
+  }
+
+  /** 只重写 #cfg-models 这一块：整页重绘会把用户正在填的表单冲掉。 */
+  function renderModelArea() {
+    const box = $('#cfg-models');
+    if (!box) return;
+    if (MODEL.loading) {
+      box.innerHTML = '<div class="cr-hint" style="margin-top:12px">正在拉取模型列表……</div>';
+      return;
+    }
+    if (!MODEL.list.length) {
+      box.innerHTML = MODEL.error
+        ? `<div class="cr-hint" style="margin-top:12px;color:var(--bad)">拉取失败：${esc(MODEL.error)}</div>`
+        : '';
+      return;
+    }
+    const more = MODEL.list.length > MODEL_MAX ? `选择框列出前 ${MODEL_MAX} 个，其余可在输入框手输。` : '';
+    box.innerHTML = `<div class="card" style="margin-top:12px">
+      <div class="kv"><span class="k">可用模型</span><span class="v">${MODEL.list.length} 个 · ${esc(MODEL.forBase.split('|')[0] || '')}</span></div>
+      <div style="margin-top:10px"><button class="btn primary" id="cfg-pick" style="width:100%">选择模型（叙事 / 裁决）</button></div>
+      <div class="cr-hint" style="margin-top:8px">点名字右侧的「叙事」「裁决」即填入对应输入框，回来按「保存」生效。${more}</div></div>`;
+    const pb = $('#cfg-pick');
+    if (pb) pb.addEventListener('click', pickFromList);
+  }
+
+  /** 打开选择框；列表还是空就先拉一次（这样「从列表选」按钮任何时候点都有反应）。 */
+  async function pickFromList() {
+    if (!modelFetchAllowed()) {
+      const log = $('#cfg-log');
+      if (log) log.textContent = '先填好接口地址与 API Key 并保存，才能拉取模型列表。';
+      return;
+    }
+    if (!MODEL.list.length) await fetchModels();
+    if (!MODEL.list.length) {
+      const log = $('#cfg-log');
+      if (log) log.textContent = '没拿到模型列表：' + (MODEL.error || '该渠道的 /models 没有返回内容，请在输入框手输模型名。');
+      return;
+    }
+    openModelPicker();
+  }
+
+  function openModelPicker() {
+    const box = $('#picker-box');
+    if (!box || !MODEL.list.length) return;
+    const curN = ($('#cfg-model') && $('#cfg-model').value.trim()) || '';
+    const curA = ($('#cfg-arbiter') && $('#cfg-arbiter').value.trim()) || '';
+    const shown = MODEL.list.slice(0, MODEL_MAX);
+    box.innerHTML = `<div class="picker-h"><span class="t">选 择 模 型</span>
+      <span class="cr-hint" style="margin-left:10px">共 ${MODEL.list.length} 个${shown.length < MODEL.list.length ? ` · 列出前 ${shown.length}` : ''}</span>
+      <button class="x" id="pk-close" title="关闭">×</button></div>
+      <div class="picker-list">${shown.map((m) => `<div class="mrow"><span class="nm">${esc(m)}</span>
+        <button class="pick ${m === curN ? 'on' : ''}" data-pk="n" data-m="${esc(m)}">叙事</button>
+        <button class="pick ${m === curA ? 'on' : ''}" data-pk="a" data-m="${esc(m)}">裁决</button></div>`).join('')}</div>
+      <div class="picker-f"><div class="cr-hint">「叙事」＝主模型（每回合演出）；「裁决」＝辅助模型，可留空。填完回本页按「保存」落盘。</div>
+        <button class="btn primary" id="pk-done" style="width:100%;margin-top:10px">完 成</button></div>`;
+    $('#picker').classList.add('open');
+    $('#pk-close').addEventListener('click', closeModelPicker);
+    $('#pk-done').addEventListener('click', closeModelPicker);
+    $$('#picker-box [data-pk]').forEach((b) => b.addEventListener('click', () => {
+      const input = $(b.dataset.pk === 'n' ? '#cfg-model' : '#cfg-arbiter');
+      if (!input) return;
+      input.value = b.dataset.m;
+      sbDirty = true; // 选完没保存前，不许被背景刷新整页重绘
+      $$('#picker-box [data-pk="' + b.dataset.pk + '"]').forEach((x) => x.classList.toggle('on', x === b));
+      const log = $('#cfg-log');
+      if (log) log.textContent = `${b.dataset.pk === 'n' ? '叙事' : '裁决'}模型已填：${b.dataset.m} —— 回本页按「保存」生效。`;
+    }));
+  }
+  function closeModelPicker() { $('#picker').classList.remove('open'); }
+  $('#picker').addEventListener('click', (e) => { if (e.target.id === 'picker') closeModelPicker(); });
+
   function newAssistantBubble() {
     const wrap = document.createElement('div');
     wrap.className = 'msg assistant';
@@ -1291,6 +1393,17 @@ import { retrieve } from './memory/retrieve.js';
 
   let moreTabsOpen = false;
 
+  /** 把当前面板的 chip 带进 tab 条视野。
+   *  手动改 scrollTop 而不是 scrollIntoView：后者会连带把整页/抽屉一起滚过去。 */
+  function revealActiveTab() {
+    const strip = $('#sb-tabs');
+    const on = strip && strip.querySelector('.tab.on');
+    if (!on) return;
+    const sr = strip.getBoundingClientRect(), r = on.getBoundingClientRect();
+    if (r.top < sr.top) strip.scrollTop -= (sr.top - r.top);
+    else if (r.bottom > sr.bottom) strip.scrollTop += (r.bottom - sr.bottom);
+  }
+
   function renderSidebar(force = false) {
     if (!force && sbDirty) return; // 用户在填表，别覆盖他
     $('#sb-title').textContent = curPanel;
@@ -1306,6 +1419,7 @@ import { retrieve } from './memory/retrieve.js';
     $$('#sb-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
     const mt = $('#sb-tabs [data-moretabs]');
     if (mt) mt.addEventListener('click', () => { moreTabsOpen = !moreTabsOpen; renderSidebar(true); });
+    revealActiveTab();
     const ci = $('#chat-input-field');
     if (ci) {
       ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(ci.value); });
@@ -1420,8 +1534,11 @@ import { retrieve } from './memory/retrieve.js';
       };
 
       $('#cfg-save').addEventListener('click', async () => {
-        try { await persistForm(true); renderSidebar(); }
-        catch (e) { $('#cfg-log').textContent = '保存失败：' + ((e && e.message) || e); }
+        try {
+          await persistForm(true);
+          await fetchModels();
+          renderSidebar();
+        } catch (e) { $('#cfg-log').textContent = '保存失败：' + ((e && e.message) || e); }
       });
 
       $('#cfg-test').addEventListener('click', async () => {
@@ -1430,19 +1547,29 @@ import { retrieve } from './memory/retrieve.js';
         try {
           // 先用表单里的地址试，避免"改了 baseUrl 却没保存"导致的误判
           await persistForm(true);
-          const list = await window.DYApp.llm.models();
-          $('#cfg-models').innerHTML = `<div class="sect-title">可 用 模 型 <span class="n">${list.length}</span></div>` +
-            `<div style="display:flex;flex-wrap:wrap;gap:6px">${list.slice(0, 60).map((m) => `<span class="chip purple">${esc(m)}</span>`).join('')}</div>`;
-          log.textContent = `连接成功，返回 ${list.length} 个模型。`;
-        } catch (e) {
-          log.textContent = '连接失败：' + ((e && e.message) || e);
+        } catch (e) { log.textContent = '保存失败：' + ((e && e.message) || e); return; }
+        await fetchModels();
+        if (MODEL.list.length) {
+          log.textContent = `连接成功，返回 ${MODEL.list.length} 个模型 —— 直接点选即可。`;
+          openModelPicker();
+        } else {
+          log.textContent = '连接失败：' + (MODEL.error || '该渠道的 /models 没有返回模型列表');
         }
       });
 
       $('#cfg-clearkey').addEventListener('click', async () => {
+        MODEL.list = []; MODEL.forBase = ''; MODEL.triedFor = ''; MODEL.error = '';
         try { await window.DYApp.llm.clearKey(); await refreshLlm(); renderSidebar(); }
         catch (e) { $('#cfg-log').textContent = '清除失败：' + ((e && e.message) || e); }
       });
+
+      $$('#sb-body [data-mpick]').forEach((b) => b.addEventListener('click', pickFromList));
+      renderModelArea();
+      // 进页即拉：本机已存 Key（或该渠道免 Key）、且这个地址还没拉成功过
+      if (modelFetchAllowed()) {
+        const key = modelKeyOfSettings();
+        if (MODEL.forBase !== key && MODEL.triedFor !== key) fetchModels();
+      }
       // ---- 对话模式与预设 ----
       $$('#sb-body [data-chatmode]').forEach((b) => b.addEventListener('click', async () => {
         CHAT.mode = b.dataset.chatmode;
@@ -1578,6 +1705,8 @@ import { retrieve } from './memory/retrieve.js';
     closeMoreSheet();   // 切面板时收起「更多」，否则弹层会悬在行动区上方
     const switching = name !== curPanel || reset;
     curPanel = name;
+    // 目标面板收在「更多」组里：先展开，否则 tab 条上看不见当前页在哪
+    if (!PANELS_COMMON.includes(name)) moreTabsOpen = true;
     // 平板上打开面板时，把收起的右栏自动展开——不然点了图标什么也不发生
     if (app.dataset.layout === 'tablet' && $('#sidebar') && $('#sidebar').classList.contains('mini')) {
       sideCollapsed = false;
@@ -1603,6 +1732,7 @@ import { retrieve } from './memory/retrieve.js';
   /* ---------- 键盘（平板带键盘 / 桌面） ---------- */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if ($('#picker').classList.contains('open')) { closeModelPicker(); return; }
       if ($('#judge').classList.contains('open')) {
         // 判定层：走"承认结果"而不是直接隐藏，否则叙事与存档都会缺这一回合
         if (typeof judgeAck === 'function') judgeAck();
@@ -1889,13 +2019,21 @@ import { retrieve } from './memory/retrieve.js';
         <div class="field"><label>附加请求头（每行一条「名: 值」，可留空）</label>
           <textarea id="cfg-headers" rows="3" placeholder="x-opencode-session: &lt;你的会话 ID&gt;">${esc(headersToText(p.defaultHeaders))}</textarea>
           <div class="cr-hint" style="margin-top:4px">部分渠道强制要求额外头（如 opencodego 的 x-opencode-session）。会话 ID 随机生成、只在本机使用。</div></div>
-        <div class="field"><label>叙事模型（主）</label><input id="cfg-model" value="${esc(n.model || '')}" placeholder="gpt-4o"></div>
+        <div class="field"><label>叙事模型（主）</label>
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <input id="cfg-model" value="${esc(n.model || '')}" placeholder="gpt-4o" style="flex:1;min-width:0">
+            <button class="btn" id="pick-n" data-mpick="n" style="flex:0 0 auto;padding:9px 12px">选 ▾</button>
+          </div></div>
         <div class="opts">
           <div class="field" style="margin:0"><label>温度</label><input id="cfg-temp" value="${n.temperature != null ? n.temperature : 0.85}"></div>
           <div class="field" style="margin:0"><label>top_p</label><input id="cfg-topp" value="${n.topP != null ? n.topP : 0.95}"></div>
           <div class="field" style="margin:0"><label>max_tokens（可空）</label><input id="cfg-max" value="${n.maxTokens == null ? '' : n.maxTokens}"></div>
         </div>
-        <div class="field"><label>裁决模型（辅，可空）</label><input id="cfg-arbiter" value="${esc((s.arbiter && s.arbiter.model) || '')}" placeholder="gpt-4o-mini"></div>
+        <div class="field"><label>裁决模型（辅，可空）</label>
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <input id="cfg-arbiter" value="${esc((s.arbiter && s.arbiter.model) || '')}" placeholder="gpt-4o-mini" style="flex:1;min-width:0">
+            <button class="btn" id="pick-a" data-mpick="a" style="flex:0 0 auto;padding:9px 12px">选 ▾</button>
+          </div></div>
         ${chatModeSectionHTML()}
         <div style="display:flex;gap:8px;margin-top:12px">
           <button class="btn primary" id="cfg-save">保 存</button>
