@@ -765,6 +765,8 @@ import { retrieve } from './memory/retrieve.js';
     const c = SYNC.config;
     if (!c || !c.autoPush || !SYNC.shell || autoPushBusy) return;
     if (!(SYNC.secrets && SYNC.secrets.syncTokenSet) || !c.repo) return; // 没配令牌/仓库就静默跳过
+    // 没设同步口令也静默跳过：存档不能明文出网，这种推送注定失败，别每次都记一条错误
+    if (!(SYNC.secrets && SYNC.secrets.syncPassphraseSet)) return;
     autoPushBusy = true;
     Promise.resolve(window.DYApp.sync.push(currentSaveId, false))
       .then(() => { SYNC.log = `自动推送完成（${new Date().toLocaleTimeString('zh-CN')}）`; })
@@ -1031,6 +1033,21 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   /* ================= 检查更新 ================= */
+  /* ---------- 应用内更新：下载附件并交给系统安装器 ---------- */
+  const UPD = {
+    os() {
+      const ua = navigator.userAgent || '';
+      if (/android/i.test(ua)) return 'android';
+      if (/windows|win32|win64/i.test(ua)) return 'windows';
+      return 'other';
+    },
+    /** 本次要装的附件（没有则只能退回发布页） */
+    target() {
+      const a = (window.DYUpdate.state && window.DYUpdate.state.asset) || {};
+      return this.os() === 'android' ? a.apk : this.os() === 'windows' ? a.win : null;
+    },
+  };
+
   function updateSectionHTML() {
     const U = window.DYUpdate, s = U.state;
     const verLabel = 'v' + U.VERSION;
@@ -1043,15 +1060,24 @@ import { retrieve } from './memory/retrieve.js';
 
     let tail = '';
     if (s.status === 'newer') {
+      const t = UPD.target();
+      const inShell = window.DYApp.available();
+      // 壳内且 Release 里有本平台可装的附件 → 直接下载并拉起安装器；
+      // 否则（浏览器预览 / 只有别的平台产物）退回链接。WebView 里 target=_blank 不响应，
+      // 所以浏览器预览才给链接，壳内没有可装附件时给的是"发布页"。
+      const primary = t && inShell
+        ? `<button class="btn primary" id="upd-install" style="flex:1">${UPD.os() === 'android' ? '下载并安装 APK' : '下载并运行安装包'}</button>`
+        : `<a class="btn primary" href="${esc(t ? t.browser_download_url : s.url)}" target="_blank" rel="noopener">${t ? '在浏览器中下载 ' + esc(t.name) : '前往发布页'}</a>`;
       tail = `<div class="card" style="margin-top:10px">
           <div style="display:flex;align-items:center;gap:8px">
             <b style="color:var(--gold)">${esc(s.latestName || s.latestTag)}</b>
             <span class="chip gold" style="margin-left:auto">${esc(s.latestTag)}</span></div>
           ${s.notes ? `<div class="upd-notes">${esc(s.notes).slice(0, 700)}</div>` : ''}
           <div style="display:flex;gap:8px;margin-top:12px">
-            <a class="btn primary" href="${esc(s.apk || s.url)}" target="_blank" rel="noopener">${s.apk ? '下载 APK' : '前往发布页'}</a>
+            ${primary}
             <a class="btn" href="${esc(U.PAGE)}" target="_blank" rel="noopener">全部版本</a>
-          </div></div>`;
+          </div>
+          <div class="cr-hint" id="upd-progress" style="margin-top:8px">${t ? '' : '这个 Release 里没有当前设备可直接安装的附件。'}</div></div>`;
     }
     return `<div class="sect-title">版 本 与 更 新</div>
       <div class="set-row">
@@ -1457,6 +1483,40 @@ import { retrieve } from './memory/retrieve.js';
       ua.classList.toggle('on', on);
       window.DYUpdate.setAuto(on);
     });
+    // 应用内下载并安装（壳内才有；浏览器预览走上面的链接）
+    const ui = $('#upd-install');
+    if (ui) ui.addEventListener('click', async () => {
+      const t = UPD.target();
+      const log = $('#upd-progress');
+      if (!t) { if (log) log.textContent = '这个 Release 里没有当前设备可直接安装的附件。'; return; }
+      const say = (m) => { if (log) log.textContent = m; };
+      const mb = (n) => (n / 1048576).toFixed(1);
+      ui.disabled = true;
+      ui.textContent = '下载中…';
+      sbDirty = true; // 下载期间不许背景刷新重建这一块，否则进度与按钮状态会丢
+      try {
+        const r = await window.DYApp.update.download(
+          { url: t.browser_download_url, requestId: 'upd' + Date.now() },
+          (ev) => {
+            if (ev && ev.type === 'progress') {
+              const d = ev.data || {};
+              say(d.total ? `已下载 ${mb(d.received)} / ${mb(d.total)} MB` : `已下载 ${mb(d.received)} MB`);
+            }
+          },
+        );
+        say(`下载完成（${mb(r.size || 0)} MB），正在交给系统安装器……`);
+        await window.DYApp.update.install(r.path);
+        say(UPD.os() === 'android'
+          ? '安装器已打开。若系统提示"禁止安装未知应用"，在刚弹出的页面里允许一次即可。'
+          : '安装包已启动。装完重新打开就是新版本，现在可以先关掉本程序。');
+        ui.textContent = '重新下载并安装';
+      } catch (e) {
+        say('失败：' + ((e && e.message) || e) + '（也可以点「全部版本」到发布页手动下载）');
+        ui.textContent = '重试';
+      }
+      sbDirty = false;
+      ui.disabled = false;
+    });
 
     /* ---------- 存档面板 ---------- */
     if ($('#sv-save')) {
@@ -1635,12 +1695,19 @@ import { retrieve } from './memory/retrieve.js';
           await window.DYApp.sync.setConfig(cfg);
           const token = $('#sy-token').value.trim();
           if (token) await window.DYApp.sync.setToken(token);
+          const pass = $('#sy-pass').value.trim();
+          if (pass) await window.DYApp.sync.setPassphrase(pass);
           await refreshSync();
           renderSidebar();
         } catch (e) { SYNC.error = String((e && e.message) || e); renderSidebar(); }
       });
       $('#sy-clear').addEventListener('click', async () => {
         try { await window.DYApp.sync.clearToken(); await refreshSync(); renderSidebar(); }
+        catch (e) { SYNC.error = String((e && e.message) || e); renderSidebar(); }
+      });
+      $('#sy-clear-pass').addEventListener('click', async () => {
+        if (!confirm('清除本机保存的同步口令？远端密文要用原口令才解得开——确认你记得它。')) return;
+        try { await window.DYApp.sync.clearPassphrase(); await refreshSync(); renderSidebar(); }
         catch (e) { SYNC.error = String((e && e.message) || e); renderSidebar(); }
       });
       $('#sy-refresh').addEventListener('click', async () => {
@@ -2056,18 +2123,27 @@ import { retrieve } from './memory/retrieve.js';
       const sec = SYNC.secrets || {};
       const fmt = (t) => (t ? new Date(t).toLocaleString('zh-CN') : '—');
       return `${SYNC.shell ? '' : shellNote()}
-        <div class="cr-hint">用你自己的 GitHub 仓库当同步盘，多端进度互通。<b>令牌只存本机</b>；<b>建议用私有仓库</b>，令牌权限只需该仓库的 Contents 读写。</div>
-        <div class="field"><label>仓库（owner/repo）</label><input id="sy-repo" value="${esc(c.repo || '')}" placeholder="your-name/dyapp-saves"></div>
+        <div class="cr-hint">多端进度互通：<b>存档在离开本机前就会加密</b>（口令派生密钥），GitHub 上只存密文，
+          连本项目这个公开仓库也不会露出你的进度。<b>令牌与口令都只存本机</b>，不进存档、不进同步。
+          换设备时要输入<b>同一个口令</b>才能解开。</div>
+        <div class="field"><label>仓库（owner/repo）</label>
+          <input id="sy-repo" value="${esc(c.repo || '')}" placeholder="owner/repo">
+          <div class="cr-hint" style="margin-top:4px">默认就是<b>本项目自己的仓库</b>，不用改；存档是密文，公开仓库也不露内容。想换仓库直接填 owner/repo。</div></div>
         <div class="opts">
           <div class="field" style="margin:0"><label>分支</label><input id="sy-branch" value="${esc(c.branch || 'main')}"></div>
           <div class="field" style="margin:0"><label>目录</label><input id="sy-path" value="${esc(c.basePath || 'saves')}"></div>
         </div>
         <div class="field"><label>GitHub 令牌${sec.syncTokenSet ? ' · 已保存 ' + esc(sec.syncTokenHint) : ''}</label>
-          <input id="sy-token" type="password" autocomplete="off" placeholder="${sec.syncTokenSet ? '留空则不改动' : 'ghp_… 或 github_pat_…'}"></div>
+          <input id="sy-token" type="password" autocomplete="off" placeholder="${sec.syncTokenSet ? '留空则不改动' : 'ghp_… 或 github_pat_…'}">
+          <div class="cr-hint" style="margin-top:4px">权限只需该仓库的 Contents 读写。</div></div>
+        <div class="field"><label>同步口令${sec.syncPassphraseSet ? ' · 已设置' : '（必填）'}</label>
+          <input id="sy-pass" type="password" autocomplete="off" placeholder="${sec.syncPassphraseSet ? '留空则不改动' : '自己定一句，只有你知道'}">
+          <div class="cr-hint" style="margin-top:4px">存档加密用的钥匙。<b>忘了就解不开</b>：远端只存密文，没有任何找回通道。改口令后要用旧口令先把远端拉下来、再推一次才会按新口令加密。</div></div>
         <div class="set-row"><div class="lbl">推送后自动同步<div class="d">每次存档后自动推送（默认关闭）</div></div><div class="switch ${c.autoPush ? 'on' : ''}" id="sy-auto"></div></div>
         <div style="display:flex;gap:8px;margin-top:12px">
           <button class="btn primary" id="sy-save">保 存</button>
           <button class="btn" id="sy-clear">清除令牌</button>
+          <button class="btn" id="sy-clear-pass">清除口令</button>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px">
           <button class="btn" id="sy-refresh">刷新存档列表</button>

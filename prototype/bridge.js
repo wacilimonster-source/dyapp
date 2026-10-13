@@ -78,6 +78,9 @@ window.DYApp = (function () {
     setConfig: (config) => call('sync_config_set', { config }),
     setToken: (token) => call('sync_token_set', { token }),
     clearToken: () => call('sync_token_clear'),
+    /** 同步口令：存档上传前用它派生加密密钥。留空表示不改动已存的口令。 */
+    setPassphrase: (passphrase) => call('sync_passphrase_set', { passphrase }),
+    clearPassphrase: () => call('sync_passphrase_clear'),
     localSaves: () => call('sync_local_saves'),
     remoteSaves: () => call('sync_remote_saves'),
     push: (saveId, force) => call('sync_push', { saveId, force: !!force }),
@@ -85,5 +88,20 @@ window.DYApp = (function () {
     pushAll: () => call('sync_push_all'),
   };
 
-  return { available, llm, sync, save, preset, platform: tauri ? 'tauri' : 'web' };
+  /* ---------------- 应用内更新（下载附件 + 交给系统安装器） ---------------- */
+  const update = {
+    /** 下载 Release 附件；onEvent 收到 {type:'progress', data:{received,total}} */
+    async download(req, onEvent) {
+      requireShell();
+      const unlisten = await listen('api://' + req.requestId, (e) => onEvent && onEvent(e.payload));
+      try {
+        return await invoke('update_download', { req });
+      } finally {
+        setTimeout(() => { try { unlisten(); } catch (e) {} }, 1000);
+      }
+    },
+    install: (path) => call('update_install', { path }),
+  };
+
+  return { available, llm, sync, save, preset, update, platform: tauri ? 'tauri' : 'web' };
 })();

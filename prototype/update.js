@@ -23,6 +23,8 @@ window.DYUpdate = (function () {
     notes: '',
     url: PAGE,
     apk: '',
+    /** 本次要装的附件：{ apk: {name,url,size}|null, win: {...}|null } */
+    asset: { apk: null, win: null },
     error: null,
     checkedAt: 0,
   };
@@ -71,7 +73,16 @@ window.DYUpdate = (function () {
         state.latestName = rel.name || tag;
         state.notes = String(rel.body || '').trim();
         state.url = rel.html_url || PAGE;
-        const apk = (rel.assets || []).find(function (a) { return /\.apk$/i.test(a.name); });
+        const assets = rel.assets || [];
+        // 未签名的 APK 装上会被系统直接拒绝，挑附件时必须避开它
+        const pick = function (re, rejectRe) {
+          return assets.find(function (a) {
+            return re.test(a.name) && !(rejectRe && rejectRe.test(a.name));
+          }) || null;
+        };
+        const apk = pick(/\.apk$/i, /unsigned/i);
+        const win = pick(/windows.*\.exe$/i, null) || pick(/\.exe$/i, null);
+        state.asset = { apk: apk, win: win };
         state.apk = apk ? apk.browser_download_url : '';
         state.status = cmp(tag, VERSION) > 0 ? 'newer' : 'latest';
       } catch (err) {

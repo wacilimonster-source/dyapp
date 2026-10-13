@@ -19,6 +19,10 @@ pub struct LocalSecrets {
     pub llm_api_key: String,
     #[serde(default)]
     pub sync_token: String,
+    /// 同步口令：存档上传前用它派生加密密钥。只在本机，且**不给掩码尾号**
+    /// （口令的末几位本身就是有用的信息，不能露）。
+    #[serde(default)]
+    pub sync_passphrase: String,
 }
 
 /// 给前端看的掩码视图：只有"有没有"和"末四位"。
@@ -29,6 +33,8 @@ pub struct MaskedSecrets {
     pub llm_key_hint: String,
     pub sync_token_set: bool,
     pub sync_token_hint: String,
+    /// 同步口令是否已设置（刻意不给尾号）
+    pub sync_passphrase_set: bool,
     /// 上次加载密钥文件时的错误（解密失败/文件损坏）。前端据此提示用户，
     /// 而不是让"我的 Key 莫名其妙没了"。
     #[serde(default)]
@@ -42,6 +48,7 @@ impl LocalSecrets {
             llm_key_hint: hint(&self.llm_api_key),
             sync_token_set: !self.sync_token.is_empty(),
             sync_token_hint: hint(&self.sync_token),
+            sync_passphrase_set: !self.sync_passphrase.is_empty(),
             decrypt_error: None,
         }
     }
@@ -184,6 +191,29 @@ impl SecretsState {
             .lock()
             .map_err(|_| crate::error::AppError::Other("密钥状态被占用".into()))?;
         guard.sync_token.clear();
+        Ok(())
+    }
+
+    /// 设置同步口令（空串视为"不改动"，与 Key 的语义一致）。
+    pub fn set_sync_passphrase(&self, passphrase: &str) -> AppResult<()> {
+        let trimmed = passphrase.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| crate::error::AppError::Other("密钥状态被占用".into()))?;
+        guard.sync_passphrase = trimmed.to_string();
+        Ok(())
+    }
+
+    pub fn clear_sync_passphrase(&self) -> AppResult<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| crate::error::AppError::Other("密钥状态被占用".into()))?;
+        guard.sync_passphrase.clear();
         Ok(())
     }
 }

@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
 use tauri::AppHandle;
 
+use crate::envelope;
 use crate::error::{api_error, AppError, AppResult};
 use crate::paths::{
     config_dir, ensure_dir, read_to_string, sanitize_id, save_dir, saves_dir, write_atomic,
@@ -26,12 +27,27 @@ use crate::secrets::{redact_for_transfer, SecretsState};
 const API: &str = "https://api.github.com";
 const SAVE_FILES: [&str; 4] = ["meta.json", "state.json", "chat.jsonl", "world.json"];
 
+/// 同步盘默认就用本项目自己的仓库 —— 只有作者一个人用，不想再填一次 owner/repo。
+/// 这个仓库是**公开**的，所以存档一律先加密再上传（见 [`envelope`]）。
+const DEFAULT_REPO: &str = "wacilimonster-source/dyapp";
+
+/// 远端文件名：加 `.enc` 后缀，一眼可辨"这是密文"，也不会和旧版明文混在一起。
+fn remote_name(name: &str) -> String {
+    format!("{name}.enc")
+}
+
+/// 盐 + 口令校验文件：放在同步根目录，所有设备共用一份。
+fn checkfile_path(cfg: &SyncConfig) -> String {
+    format!("{}/.keycheck", cfg.base_path.trim_end_matches('/'))
+}
+
 /* ============================ 配置 ============================ */
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConfig {
-    /// `owner/repo`；建议用**私有**仓库
+    /// `owner/repo`；留空则用本项目仓库（存档是密文，放公开仓库也不外泄内容）
+    #[serde(default = "d_repo")]
     pub repo: String,
     #[serde(default = "d_branch")]
     pub branch: String,
@@ -41,6 +57,9 @@ pub struct SyncConfig {
     pub auto_push: bool,
 }
 
+fn d_repo() -> String {
+    DEFAULT_REPO.to_string()
+}
 fn d_branch() -> String {
     "main".into()
 }
@@ -51,7 +70,7 @@ fn d_path() -> String {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
-            repo: String::new(),
+            repo: d_repo(),
             branch: d_branch(),
             base_path: d_path(),
             auto_push: false,
@@ -66,11 +85,22 @@ pub struct SyncState {
 impl SyncState {
     pub fn load(app: &AppHandle) -> AppResult<Self> {
         let path = config_path(app)?;
-        let cfg = if path.exists() {
+        let mut cfg = if path.exists() {
             serde_json::from_str::<SyncConfig>(&read_to_string(&path)?).unwrap_or_default()
         } else {
             SyncConfig::default()
         };
+        // 旧版本存下来的配置里 repo 是空串（serde 的 default 只管"字段缺失"，不管"值为空"），
+        // 这里补上默认仓库，用户升级后不必重填。
+        if cfg.repo.trim().is_empty() {
+            cfg.repo = d_repo();
+        }
+        if cfg.base_path.trim().is_empty() {
+            cfg.base_path = d_path();
+        }
+        if cfg.branch.trim().is_empty() {
+            cfg.branch = d_branch();
+        }
         Ok(Self {
             inner: Mutex::new(cfg),
         })
@@ -121,6 +151,46 @@ fn require(token: &str, repo: &str) -> AppResult<()> {
         return Err(AppError::NotConfigured("仓库（格式 owner/repo）".into()));
     }
     Ok(())
+}
+
+/// 只有真的会加/解密存档的操作才要口令。
+/// 「列出远端存档」故意不要求它 —— 换设备时应该能先看到有哪些档，再输口令去拉。
+fn require_passphrase(passphrase: &str) -> AppResult<()> {
+    if passphrase.trim().is_empty() {
+        return Err(AppError::NotConfigured(
+            "同步口令（存档要用它加密后才能上传）".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 拿到本次同步用的密钥。
+///
+/// 远端有 `.keycheck` 就用它校验口令并取盐 —— **口令不对在这里就报出来**，
+/// 不要等到解第四个文件才发现；远端还没有（首次同步）就用本机口令建一份。
+async fn resolve_key(token: &str, cfg: &SyncConfig, passphrase: &str) -> AppResult<[u8; 32]> {
+    let cf = checkfile_path(cfg);
+    match get_file(token, cfg, &cf).await? {
+        Some((bytes, _)) => {
+            envelope::verify_checkfile(passphrase, &bytes)?;
+            let salt = envelope::checkfile_salt(&bytes)?;
+            envelope::derive_key(passphrase, &salt)
+        }
+        None => {
+            let salt = envelope::random_salt()?;
+            let key = envelope::derive_key(passphrase, &salt)?;
+            put_file(
+                token,
+                cfg,
+                &cf,
+                &envelope::make_checkfile_with(&key, &salt)?,
+                None,
+                "sync: 初始化同步口令校验",
+            )
+            .await?;
+            Ok(key)
+        }
+    }
 }
 
 fn urlencoded(segment: &str) -> String {
@@ -370,8 +440,18 @@ pub fn sync_config_get(
 pub fn sync_config_set(
     app: AppHandle,
     sync: tauri::State<'_, SyncState>,
-    config: SyncConfig,
+    mut config: SyncConfig,
 ) -> AppResult<()> {
+    // 界面上留空 = 用本项目仓库（少一个必填项），与 load 的补默认同一条规则
+    if config.repo.trim().is_empty() {
+        config.repo = d_repo();
+    }
+    if config.base_path.trim().is_empty() {
+        config.base_path = d_path();
+    }
+    if config.branch.trim().is_empty() {
+        config.branch = d_branch();
+    }
     {
         let mut guard = sync
             .inner
@@ -398,6 +478,26 @@ pub fn sync_token_clear(app: AppHandle, secrets: tauri::State<'_, SecretsState>)
     secrets.persist(&app)
 }
 
+/// 设置同步口令（存档加密用）。留空表示不改动已存的口令。
+#[tauri::command]
+pub fn sync_passphrase_set(
+    app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
+    passphrase: String,
+) -> AppResult<()> {
+    secrets.set_sync_passphrase(&passphrase)?;
+    secrets.persist(&app)
+}
+
+#[tauri::command]
+pub fn sync_passphrase_clear(
+    app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
+) -> AppResult<()> {
+    secrets.clear_sync_passphrase()?;
+    secrets.persist(&app)
+}
+
 #[tauri::command]
 pub fn sync_local_saves(app: AppHandle) -> AppResult<Vec<Value>> {
     let mut out = Vec::new();
@@ -419,7 +519,12 @@ pub async fn sync_remote_saves(
     let cfg = sync.snapshot();
     let token = secrets.snapshot().sync_token;
     require(&token, &cfg.repo)?;
-    list_dir(&token, &cfg, &cfg.base_path).await
+    // .keycheck 是加密用的校验文件，不是存档，别混进"远端存档"列表
+    Ok(list_dir(&token, &cfg, &cfg.base_path)
+        .await?
+        .into_iter()
+        .filter(|e| e.name != ".keycheck")
+        .collect())
 }
 
 /// chat.jsonl 逐行清洗：单行解析失败按原样保留（多半是坏行，读取时也会被跳过）。
@@ -458,6 +563,7 @@ async fn push_one(
     app: &AppHandle,
     cfg: &SyncConfig,
     token: &str,
+    key: &[u8; 32],
     save_id: &str,
     force: bool,
 ) -> AppResult<Value> {
@@ -469,9 +575,15 @@ async fn push_one(
 
     // 未 force 时：远端更新则中止，避免把另一台设备的进度盖掉
     if !force {
-        if let Some((bytes, _)) = get_file(token, cfg, &format!("{}/meta.json", remote_dir)).await?
+        if let Some((bytes, _)) = get_file(
+            token,
+            cfg,
+            &format!("{}/{}", remote_dir, remote_name("meta.json")),
+        )
+        .await?
         {
-            let remote_updated = serde_json::from_slice::<Value>(&bytes)
+            let plain = envelope::open(key, &bytes)?;
+            let remote_updated = serde_json::from_slice::<Value>(&plain)
                 .ok()
                 .and_then(|v| v.get("updatedAt").and_then(|x| x.as_u64()));
             if let (Some(r), Some(l)) = (remote_updated, local_updated_at(app, &id)) {
@@ -485,38 +597,10 @@ async fn push_one(
         }
     }
 
-    // force 会覆盖远端：先把远端那一版取下来存到本地。
-    // 与 sync_pull 覆盖本机前会备份对称 —— 否则强制推送会让另一台设备的进度无声消失
-    // （远端是 git，历史可回滚，但用户得知道去哪儿找；存在存档目录里就找得到）。
-    let mut remote_backup: Option<PathBuf> = None;
-    if force {
-        for name in SAVE_FILES {
-            let Some(existing) = remote.iter().find(|e| e.name == name && !e.is_dir) else {
-                continue;
-            };
-            let path = dir.join(name);
-            if !path.exists() {
-                continue;
-            }
-            if git_blob_sha(&std::fs::read(&path)?) == existing.sha {
-                continue; // 内容一致，不会覆盖掉任何东西
-            }
-            if let Some((bytes, _)) =
-                get_file(token, cfg, &format!("{}/{}", remote_dir, name)).await?
-            {
-                let bdir = remote_backup.get_or_insert_with(|| {
-                    dir.join(format!(
-                        "remote-backup-{}",
-                        chrono::Local::now().format("%Y%m%d-%H%M%S")
-                    ))
-                });
-                ensure_dir(bdir)?;
-                write_atomic(&bdir.join(name), &bytes)?;
-            }
-        }
-    }
-
-    let mut uploaded = Vec::new();
+    // 先把四件套读出来、清洗、加密，得到"这次要传什么"。
+    // 备份判断与上传判断共用同一份密文：确定性加密下，内容没变 → 密文没变 → sha 没变，
+    // 未改动的文件依然会被跳过（加密不该把"增量上传"搞成全量重传）。
+    let mut staged: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in SAVE_FILES {
         let path = dir.join(name);
         if !path.exists() {
@@ -524,7 +608,7 @@ async fn push_one(
         }
         let mut bytes = std::fs::read(&path)?;
         // 兜底：JSON 先过一遍敏感字段清洗；叙事流逐行清洗。
-        // 清洗结果同时参与 sha 比对与上传，避免"本地脏 → 每次都重传"的空转。
+        // 清洗发生在加密之前，结果同时参与 sha 比对与上传。
         if name == "chat.jsonl" {
             bytes = redact_jsonl(&bytes);
         } else if name.ends_with(".json") {
@@ -533,16 +617,53 @@ async fn push_one(
                 bytes = serde_json::to_vec_pretty(&value)?;
             }
         }
-        let local_sha = git_blob_sha(&bytes);
-        let existing = remote.iter().find(|e| e.name == name && !e.is_dir);
-        if existing.map(|e| e.sha == local_sha).unwrap_or(false) {
+        staged.push((name, envelope::seal_stable(key, &bytes)?));
+    }
+
+    // force 会覆盖远端：先把远端那一版取下来存到本地。
+    // 与 sync_pull 覆盖本机前会备份对称 —— 否则强制推送会让另一台设备的进度无声消失
+    // （远端是 git，历史可回滚，但用户得知道去哪儿找；存在存档目录里就找得到）。
+    let mut remote_backup: Option<PathBuf> = None;
+    if force {
+        for (name, sealed) in &staged {
+            let rname = remote_name(name);
+            let Some(existing) = remote.iter().find(|e| e.name == rname && !e.is_dir) else {
+                continue;
+            };
+            if git_blob_sha(sealed) == existing.sha {
+                continue; // 内容一致，不会覆盖掉任何东西
+            }
+            if let Some((bytes, _)) =
+                get_file(token, cfg, &format!("{}/{}", remote_dir, rname)).await?
+            {
+                let bdir = remote_backup.get_or_insert_with(|| {
+                    dir.join(format!(
+                        "remote-backup-{}",
+                        chrono::Local::now().format("%Y%m%d-%H%M%S")
+                    ))
+                });
+                ensure_dir(bdir)?;
+                // 备份落盘是**解密后的明文**（与本机存档同格式），不是密文
+                write_atomic(&bdir.join(name), &envelope::open(key, &bytes)?)?;
+            }
+        }
+    }
+
+    let mut uploaded = Vec::new();
+    for (name, sealed) in &staged {
+        let rname = remote_name(name);
+        let existing = remote.iter().find(|e| e.name == rname && !e.is_dir);
+        if existing
+            .map(|e| e.sha == git_blob_sha(sealed))
+            .unwrap_or(false)
+        {
             continue; // 内容一致，跳过
         }
         put_file(
             token,
             cfg,
-            &format!("{}/{}", remote_dir, name),
-            &bytes,
+            &format!("{}/{}", remote_dir, rname),
+            sealed,
             existing.map(|e| e.sha.as_str()),
             &format!("sync: {} · {}", id, name),
         )
@@ -568,9 +689,12 @@ pub async fn sync_push(
     force: bool,
 ) -> AppResult<Value> {
     let cfg = sync.snapshot();
-    let token = secrets.snapshot().sync_token;
+    let snap = secrets.snapshot();
+    let (token, passphrase) = (snap.sync_token, snap.sync_passphrase);
     require(&token, &cfg.repo)?;
-    push_one(&app, &cfg, &token, &save_id, force).await
+    require_passphrase(&passphrase)?;
+    let key = resolve_key(&token, &cfg, &passphrase).await?;
+    push_one(&app, &cfg, &token, &key, &save_id, force).await
 }
 
 /// 拉取一个存档：远端更新才覆盖；覆盖前把本地副本另存为 `.conflict-<时间戳>`。
@@ -583,22 +707,31 @@ pub async fn sync_pull(
     force: bool,
 ) -> AppResult<Value> {
     let cfg = sync.snapshot();
-    let token = secrets.snapshot().sync_token;
+    let snap = secrets.snapshot();
+    let (token, passphrase) = (snap.sync_token, snap.sync_passphrase);
     require(&token, &cfg.repo)?;
+    require_passphrase(&passphrase)?;
+    let key = resolve_key(&token, &cfg, &passphrase).await?;
 
     let id = sanitize_id(&save_id);
     let dir = save_dir(&app, &id)?;
     crate::save::heal_save_dir(&dir); // 先收拾换盘残骸再拉
     let remote_dir = format!("{}/{}", cfg.base_path.trim_end_matches('/'), id);
 
-    let remote_meta = get_file(&token, &cfg, &format!("{}/meta.json", remote_dir)).await?;
+    let remote_meta = get_file(
+        &token,
+        &cfg,
+        &format!("{}/{}", remote_dir, remote_name("meta.json")),
+    )
+    .await?;
     let Some((remote_meta_bytes, _)) = remote_meta else {
         return Err(AppError::Other(format!("远端没有存档「{}」", id)));
     };
-    let remote_updated = serde_json::from_slice::<Value>(&remote_meta_bytes)
-        .ok()
-        .and_then(|v| v.get("updatedAt").and_then(|x| x.as_u64()))
-        .unwrap_or(0);
+    let remote_updated =
+        serde_json::from_slice::<Value>(&envelope::open(&key, &remote_meta_bytes)?)
+            .ok()
+            .and_then(|v| v.get("updatedAt").and_then(|x| x.as_u64()))
+            .unwrap_or(0);
 
     let local_updated = local_updated_at(&app, &id);
     if !force {
@@ -620,11 +753,17 @@ pub async fn sync_pull(
     // 下次同步会据此误判"本地最新"并拒绝拉取 —— 状态与叙事流就此分叉。
     let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     for name in SAVE_FILES {
-        let Some((bytes, _)) = get_file(&token, &cfg, &format!("{}/{}", remote_dir, name)).await?
+        let Some((bytes, _)) = get_file(
+            &token,
+            &cfg,
+            &format!("{}/{}", remote_dir, remote_name(name)),
+        )
+        .await?
         else {
             continue;
         };
-        fetched.push((name.to_string(), bytes));
+        // 落盘的是解密后的明文；远端那一层信封只存在于 GitHub 上
+        fetched.push((name.to_string(), envelope::open(&key, &bytes)?));
     }
 
     // 落盘用"临时目录 → 整体换盘"（与 save.rs 同机制）：
@@ -679,15 +818,18 @@ pub async fn sync_push_all(
     secrets: tauri::State<'_, SecretsState>,
 ) -> AppResult<Value> {
     let ids = local_save_ids(&app)?;
-    // 配置与令牌在整批里不变，提到循环外
+    // 配置、令牌与派生密钥在整批里不变，提到循环外（PBKDF2 一次 31 万轮，别每档跑一遍）
     let cfg = sync.snapshot();
-    let token = secrets.snapshot().sync_token;
+    let snap = secrets.snapshot();
+    let (token, passphrase) = (snap.sync_token, snap.sync_passphrase);
     require(&token, &cfg.repo)?;
+    require_passphrase(&passphrase)?;
+    let key = resolve_key(&token, &cfg, &passphrase).await?;
 
     let mut report = Vec::new();
     for id in ids {
         // 逐个走同步逻辑，单个失败不影响其余（错误如实记入该条）
-        match push_one(&app, &cfg, &token, &id, false).await {
+        match push_one(&app, &cfg, &token, &key, &id, false).await {
             Ok(v) => report.push(json!({
                 "id": id,
                 "uploaded": v.get("uploaded").cloned().unwrap_or_else(|| json!([])),

@@ -55,11 +55,13 @@
 | 路径 | 内容 |
 |---|---|
 | `src-tauri/src/llm.rs` | 最小 OpenAI 兼容客户端：SSE 流式 + JSON 模式 + `/models` |
-| `src-tauri/src/secrets.rs` | 本地密钥（模型 Key / 同步令牌），**不进存档、不进同步** |
-| `src-tauri/src/sync.rs` | GitHub Contents API 进度同步（推送/拉取/冲突提示/覆盖前备份） |
+| `src-tauri/src/secrets.rs` | 本地密钥（模型 Key / 同步令牌 / 同步口令），**不进存档、不进同步** |
+| `src-tauri/src/sync.rs` | GitHub Contents API 进度同步（推送/拉取/冲突提示/覆盖前备份），出网前一律加密 |
+| `src-tauri/src/envelope.rs` | 存档信封加密：口令 → PBKDF2 → ChaCha20-Poly1305，含口令校验文件 |
+| `src-tauri/src/update.rs` | 应用内更新：下载 Release 附件（域名/文件名双重校验）并交给系统安装器 |
 | `src-tauri/src/paths.rs` | 配置与数据目录、原子写 |
 | `src-tauri/gen/android/` | `cargo tauri android init` 生成的安卓工程 |
-| `src-tauri/icons/` | 应用图标（PIL 生成，含 Windows `.ico`） |
+| `src-tauri/icons/` | 应用图标（`cargo tauri icon` 从 `icons/source.png` 一次生成两端） |
 
 构建命令与前置条件见 [`docs/03`](docs/03-应用架构与实现.md) 第 7 节。**Windows 侧必须是 MSVC 工具链**（MinGW 缺 `dlltool`）。
 

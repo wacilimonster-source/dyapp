@@ -1,4 +1,5 @@
 mod crypto;
+mod envelope;
 mod error;
 mod llm;
 mod paths;
@@ -6,6 +7,7 @@ mod preset;
 mod save;
 mod secrets;
 mod sync;
+mod update;
 
 use tauri::Manager;
 
@@ -48,11 +50,16 @@ pub fn run() {
             sync::sync_config_set,
             sync::sync_token_set,
             sync::sync_token_clear,
+            sync::sync_passphrase_set,
+            sync::sync_passphrase_clear,
             sync::sync_local_saves,
             sync::sync_remote_saves,
             sync::sync_push,
             sync::sync_pull,
             sync::sync_push_all,
+            // 应用内更新：下载 Release 附件并交给系统安装器
+            update::update_download,
+            update::update_install,
         ])
         .run(tauri::generate_context!())
         .expect("《道渊》启动失败");
