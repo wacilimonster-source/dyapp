@@ -62,7 +62,20 @@ jobs:
           set -e
           TAG="${TAG_REF}"
           ZIP="dyapp-prototype-${TAG}.zip"
-          NOTES="release-notes/${TAG}.md"
+          NOTES_FILE="release-notes/${TAG}.md"
+          NOTES="$NOTES_FILE"
+          # 说明以**默认分支**上的那份为准。
+          # 为什么：tag 一旦打下去就不再动，而说明往往在发版之后还要改；只在 tag 树里找的话，
+          # 任何一次重跑都会拿旧说明把新的覆盖回去（这里真踩过：dispatch 一次把补好的说明盖掉了）。
+          DEF="${{ github.event.repository.default_branch }}"
+          if [ -n "$DEF" ] && git fetch --depth=1 origin "$DEF" >/dev/null 2>&1; then
+            DEF_SHA="$(git rev-parse FETCH_HEAD)"
+            if git cat-file -e "${DEF_SHA}:${NOTES_FILE}" 2>/dev/null; then
+              git show "${DEF_SHA}:${NOTES_FILE}" > /tmp/dy-release-notes.md
+              NOTES=/tmp/dy-release-notes.md
+              echo "更新说明取自默认分支 ${DEF}（${DEF_SHA:0:7}）的 ${NOTES_FILE}"
+            fi
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在 → 更新说明与附件"
             # --draft=false 很关键：**删掉 tag 会把已发布的 Release 变成草稿**，
