@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { emptyState, normalize } from '../prototype/engine/state.js';
 import { applyAll, applyEffect } from '../prototype/engine/effects.js';
 import { resolveIntent } from '../prototype/engine/turn.js';
-import { applyCreateState, openingTurn, drawTrueLuck } from '../prototype/engine/create.js';
+import { applyCreateState, openingTurn } from '../prototype/engine/create.js';
 import { evaluateAchievements, ACHIEVEMENTS } from '../prototype/engine/achievements.js';
 import { buildRecap } from '../prototype/memory/recap.js';
 import { composeNarrative } from '../prototype/narrator/prompt.js';
@@ -78,24 +78,9 @@ test('突破：修为满 100 时照常掷骰', () => {
 });
 
 /* ============================================================
- * bug: 「真·气运（5%）」按钮直接入选 —— 概率形同虚设；
- * 且抽取逻辑在界面层不可测
+ * 「真·气运」相关的回归已迁到 tests/luck.roll.test.mjs ——
+ * 气运改成照卡的演算机制后，"按钮直接入选"这个 bug 的形态就不存在了。
  * ============================================================ */
-
-test('真·气运：5% 命中/未命中可复现，且不与已有条目重复', () => {
-  const pool = [{ name: '过目不忘', 向: '通用', desc: 'x' }, { name: '混沌体', 向: '通用', desc: 'y' }];
-  const hit = drawTrueLuck(() => 0.01, pool, [], 0.05);
-  assert.ok(hit && hit.name.startsWith('真·'));
-  assert.equal(hit.真, true);
-
-  const miss = drawTrueLuck(() => 0.9, pool, [], 0.05);
-  assert.equal(miss, null, '掷骰未命中必须返回 null');
-
-  // 命中的名字已存在时跳过它（用常量 rng 会一直抽同一条，守卫会返回 null）
-  const taken = [{ name: '真·过目不忘' }];
-  const dup = drawTrueLuck(() => 0.01, [{ name: '过目不忘', 向: '通用', desc: 'x' }], taken, 0.05);
-  assert.equal(dup, null, '池中唯一候选已被占用时不重复发放');
-});
 
 /* ============================================================
  * bug: 创角规则散在界面层（死条件 '青云宗外门'、道侣不拷预设设定、

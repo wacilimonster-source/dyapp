@@ -171,6 +171,24 @@ export function freeze(state, path) {
   state.$frozen[path] = true;
 }
 
+/**
+ * 气运摘要：名号 + 类型 + **卡内原文效果**。
+ *
+ * 为什么把描述也塞进摘要：卡里每条气运都明写着代价（「不化骨」关节僵硬、
+ * 「鸿蒙紫气」举世皆敌），只给名号等于让模型自己脑补一条"纯赚"的气运 ——
+ * 那正是上一版被改写成"全是好处"的成因。
+ */
+function fateLines(P) {
+  const fates = Object.entries(P.气运 || {});
+  if (!fates.length) return '气运：无';
+  const body = fates.map(([name, v]) => {
+    const kind = v?.类型 || (v?.真 ? '真气运' : '凡道');
+    const eff = String(v?.效果 || '').replace(/\s+/g, ' ').trim();
+    return `· 【${name}】（${kind}）${eff || '（无描述）'}`;
+  }).join('\n');
+  return `气运：\n${body}`;
+}
+
 /** 生成给模型看的紧凑状态摘要（对应技术架构 L3 层）。 */
 export function stateSummary(state) {
   const P = state?.主角 || {};
@@ -185,7 +203,8 @@ export function stateSummary(state) {
     `${P.姓名} · ${P.境界} · ${P.宗门} · ${P.所在界}`,
     `时间：${W.当前时间}｜地点：${W.当前地点}｜天气：${W.天气}｜危机：${W.危机程度}`,
     `生命${P.生命} 精血${P.精血} 灵力${P.灵力} 修为${P.修为} 神识${P.神识} 道心${P.道心}`,
-    `灵根：${P.灵根}｜状态：${P.状态}｜气运：${Object.keys(P.气运 || {}).join('、') || '无'}`,
+    `灵根：${P.灵根}｜状态：${P.状态}`,
+    fateLines(P),
     `道侣：${dai}｜灵宠：${pet}｜在场人物：${who}`,
   ].join('\n');
 }

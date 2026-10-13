@@ -8,7 +8,8 @@
 import { normalize as normalizeState, snapshot } from './engine/state.js';
 import { runTurn } from './engine/turn.js';
 import { daoStage, vague, crisisLevel, parseRealm, realmIndex, DC_TIERS } from './engine/rules.js';
-import { drawRootTier, drawTrueLuck, applyCreateState, openingTurn } from './engine/create.js';
+import { drawRootTier, applyCreateState, openingTurn, migrateFates } from './engine/create.js';
+import { rollFates, fateText, findFate, FATE_MODES, eroPool } from './engine/fate.js';
 import { evaluateAchievements, ACHIEVEMENTS } from './engine/achievements.js';
 import { buildRecap } from './memory/recap.js';
 import { buildIndex } from './memory/index.js';
@@ -256,28 +257,150 @@ import { retrieve } from './memory/retrieve.js';
     '内容与原作角色卡完全一致，默认开启，不做删改。'));
 
   /* ================= 创角向导 ================= */
-  const defaultCreate = () => ({ step: 0, 姓名: '', 性别: '男', 出身: '', 灵根: null, 气运: [], 道侣: '', 出生界: '玄天界', spinning: false });
+  const defaultCreate = () => ({ step: 0, 姓名: '', 性别: '男', 出身: '', 灵根: null, 气运: [], 自定义: [], 道侣: '', 出生界: '玄天界', spinning: false });
   const createState = defaultCreate();
   const STEPS = ['身份', '灵根', '气运', '道侣', '出生界', '确认'];
   const ORIGINS = [
     { n: '寒门散修', d: '无依无靠，道心 +8，初始无宗门' },
     { n: '宗门外门', d: '青云宗外门弟子，初始贡献 120' },
     { n: '没落世家', d: '家道中落，初始灵石 +20，心高气傲' },
-    { n: '仙缘遗孤', d: '身负未解身世，真·气运抽取 +1 次' },
+    { n: '仙缘遗孤', d: '身负未解身世，开局多一段旧缘线索' },
   ];
   /** 灵根品阶配色（纯界面装饰；概率与产出在 engine/rules.js，单一来源）。 */
   const ROOT_COLORS = { 天品: '#ff9de2', 地品: '#ffd479', 玄品: '#8fd0ff', 黄品: '#9bd8a6', 凡品: '#9aa3b5' };
-  const LUCK_TMP = deep(D.LUCK_POOL);
-  /** 本次创角用掉的真·气运抽取次数（仙缘遗孤多一次）。 */
-  let trueLuckUsed = 0;
-  const trueLuckMax = () => (createState.出身 === '仙缘遗孤' ? 2 : 1);
+
+  /* ---------- 气运（照卡：演算 + 双槽 + 预算 + 合欢/逆天改命两个开关） ---------- */
+  /** luck.json：609 条原文，启动时异步载入（与世界书同一套路）。 */
+  let LUCK = null;
+  const FATE = {
+    mode: 'simple',
+    /** 卡内重置时「合欢秘辛」默认不勾；本产品立场是"尺度与卡一致、默认开启"（裁决①B），故默认开 */
+    ero: true,
+    cheat: false,
+    rollsLeft: FATE_MODES.simple.预算,
+    cands: { normal: [], ero: [] },
+    /** 两个槽：凡道 1 条 + 合欢 1 条（卡内 3000-3050 的选择规则） */
+    picked: { normal: null, ero: null },
+  };
+
+  async function loadLuck() {
+    try {
+      const res = await fetch('data/luck.json', { cache: 'force-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      LUCK = await res.json();
+      return LUCK;
+    } catch (e) {
+      console.warn('[luck] 气运库加载失败，创角第三步将无法演算：', e.message);
+      return null;
+    }
+  }
+
+  /** 一次演算。`keepLocked` 对应卡内的 lockedNormal / lockedEro：已定的那条重 roll 时保留。 */
+  function fateRoll() {
+    if (!LUCK) return;
+    const r = rollFates({
+      luck: LUCK,
+      rng: Math.random,
+      mode: FATE.mode,
+      ero: FATE.ero,
+      cheat: FATE.cheat,
+      gender: createState.性别,
+      lockedNormal: FATE.picked.normal,
+      lockedEro: FATE.picked.ero,
+    });
+    FATE.cands = { normal: r.normal, ero: r.ero };
+  }
+
+  /** 最终带走的气运：自定义优先（卡内"自定义气运优先级高于 ROLL 池"），其后是双槽。 */
+  function fatePickedList() {
+    const custom = (createState.自定义 || []).filter((c) => c && c.name)
+      .map((c) => ({ name: c.name, desc: c.desc || '', 真: false, 合欢: false }));
+    return [...custom, FATE.picked.normal, FATE.picked.ero].filter(Boolean);
+  }
+
+  /**
+   * 气运库：把 609 条全部摊开可搜可直选。
+   *
+   * 为什么必须有它：卡内真气运是按凡道下标抽的（regex8_creation.txt:2908），
+   * 凡池 113 条走完之后的 86 条真条**永远 roll 不到**，只有这里能选到。
+   */
+  const LIB = { slot: 'normal', q: '', open: false };
+  const LIB_LIMIT = 200;
+
+  function libGroups() {
+    const groups = [
+      { key: 'normal', 名: '凡道气运', list: LUCK.normal.map((e) => ({ ...e, 真: false, 合欢: false })) },
+      { key: 'true', 名: '真气运', list: LUCK.true.map((e) => ({ ...e, 真: true, 合欢: false })) },
+    ];
+    if (FATE.ero) {
+      groups.push({
+        key: 'ero', 名: '合欢气运',
+        list: eroPool(LUCK, createState.性别).map((e) => ({ ...e, 真: false, 合欢: true })),
+      });
+    }
+    return groups;
+  }
+
+  function openFateLibrary() {
+    if (!LUCK) return;
+    LIB.open = true;
+    renderFateLibrary();
+    $('#picker').classList.add('open');
+  }
+  function closeFateLibrary() {
+    LIB.open = false;
+    $('#picker').classList.remove('open');
+    renderCreate();
+  }
+
+  function renderFateLibrary() {
+    const box = $('#picker-box');
+    if (!box || !LUCK) return;
+    const q = LIB.q.trim();
+    const match = (e) => !q || e.name.includes(q) || (e.desc || '').includes(q);
+    let shown = 0;
+    const sections = libGroups().map((g) => {
+      const hits = g.list.filter(match);
+      const take = hits.slice(0, Math.max(0, LIB_LIMIT - shown));
+      shown += take.length;
+      const rows = take.map((e) => `<div class="mrow"><div style="flex:1;min-width:0">
+          <div class="nm">${e.真 ? '<span class="chip gold">真</span> ' : ''}${e.合欢 ? '<span class="chip purple">合欢</span> ' : ''}${esc(e.name)}</div>
+          <div class="cr-hint" style="font-size:.72rem;margin-top:2px">${esc((e.desc || '').slice(0, 64))}${(e.desc || '').length > 64 ? '…' : ''}</div></div>
+          <button class="pick ${(FATE.picked[LIB.slot] || {}).name === e.name ? 'on' : ''}" data-libpick="${esc(e.name)}" data-libero="${e.合欢 ? 1 : 0}">选</button></div>`).join('');
+      return `<div class="sect-title">${esc(g.名)} <span class="n">${hits.length}</span></div>${rows || '<div class="cr-hint">没有匹配条目。</div>'}`;
+    }).join('');
+    box.innerHTML = `<div class="picker-h"><span class="t">气 运 库</span>
+        <span class="chip gold" style="margin-left:8px">选入：${LIB.slot === 'ero' ? '合欢槽' : '凡道槽'}</span>
+        <button class="x" id="lib-close">×</button></div>
+      <div style="padding:10px 14px 0;display:flex;gap:8px">
+        <input id="lib-q" placeholder="搜名号或描述…" value="${esc(LIB.q)}" style="flex:1;min-width:0">
+        <button class="btn" id="lib-slot" style="flex:0 0 auto">${LIB.slot === 'ero' ? '换凡道槽' : '换合欢槽'}</button></div>
+      <div class="picker-list">${sections}
+        ${shown >= LIB_LIMIT ? '<div class="cr-hint" style="margin-top:8px">先列出前 200 条，用上面的搜索缩小范围。</div>' : ''}</div>`;
+    $('#lib-close').addEventListener('click', closeFateLibrary);
+    $('#lib-q').addEventListener('input', (e) => { LIB.q = e.target.value; renderFateLibrary(); $('#lib-q').focus(); });
+    $('#lib-slot').addEventListener('click', () => {
+      LIB.slot = LIB.slot === 'normal' ? 'ero' : 'normal';
+      if (LIB.slot === 'ero' && !FATE.ero) { FATE.ero = true; toast('已同时打开「合欢秘辛」'); }
+      renderFateLibrary();
+    });
+    $$('#picker-box [data-libpick]').forEach((b) => b.addEventListener('click', () => {
+      const f = findFate(LUCK, b.dataset.libpick);
+      if (!f) return;
+      FATE.picked[LIB.slot] = { name: f.name, desc: f.desc, 真: f.真, 合欢: LIB.slot === 'ero' };
+      renderFateLibrary();
+    }));
+  }
 
   function startCreate() {
-    // 每局重置：此前 createState 与 LUCK_TMP 是模块级常量，二次创角会继承上一局的灵根/气运
+    // 每局重置：此前 createState 与候选池是模块级常量，二次创角会继承上一局的灵根/气运
     Object.assign(createState, defaultCreate());
-    trueLuckUsed = 0;
-    LUCK_TMP.length = 0;
-    LUCK_TMP.push(...deep(D.LUCK_POOL));
+    FATE.mode = 'simple';
+    FATE.ero = true;
+    FATE.cheat = false;
+    FATE.rollsLeft = FATE_MODES.simple.预算;
+    FATE.cands = { normal: [], ero: [] };
+    FATE.picked = { normal: null, ero: null };
     showScreen('s-create');
     renderCreate();
   }
@@ -299,9 +422,19 @@ import { retrieve } from './memory/retrieve.js';
         </div></div>
         <div class="field"><label>出身背景</label><div class="opts">
           ${ORIGINS.map((o) => `<button class="opt ${createState.出身 === o.n ? 'on' : ''}" data-set="出身" data-v="${o.n}">${o.n}<span class="d">${o.d}</span></button>`).join('')}
-        </div></div>`;
+        </div></div>
+        <div class="field"><label>命格难度</label><div class="opts">
+          ${Object.entries(FATE_MODES).map(([k, m]) => `<button class="opt ${FATE.mode === k ? 'on' : ''}" data-fatemode="${k}">${m.名}<span class="d">气运演算 ${m.预算} 次 · 每次 ${k === 'hard' ? 5 : 10} 个候选${m.可出真 ? ' · 可出真·气运' : ' · 不出真·气运'}</span></button>`).join('')}
+        </div>
+          <div class="cr-hint" style="margin-top:4px">对应原卡创角界面的三档（随缘 / 正途 / 逆天而行），只影响气运演算的规则。</div></div>`;
       foot.innerHTML = `<button class="btn primary" id="cr-next">下 一 步</button>`;
       $('#f-name').addEventListener('input', (e) => (createState.姓名 = e.target.value));
+      $$('#cr-body [data-fatemode]').forEach((b) => b.addEventListener('click', () => {
+        FATE.mode = b.dataset.fatemode;
+        FATE.rollsLeft = FATE_MODES[FATE.mode].预算;
+        if (!FATE_MODES[FATE.mode].可出真) FATE.cheat = false;
+        renderCreate();
+      }));
     } else if (st === 1) {
       body.innerHTML = `
         <div class="cr-step-label">第二步 / 六</div>
@@ -317,26 +450,72 @@ import { retrieve } from './memory/retrieve.js';
         <button class="btn primary" id="cr-next" ${createState.灵根 ? '' : 'disabled style="opacity:.5"'}>下 一 步</button>`;
       $('#cr-roll').addEventListener('click', rollRoot);
     } else if (st === 2) {
+      if (LUCK && !FATE.cands.normal.length) fateRoll();
+      const M = FATE_MODES[FATE.mode];
+      const picked = FATE.picked;
+      const chip = (f, slot) => `<button class="opt ${(picked[slot] || {}).name === f.name ? 'on' : ''}"
+          data-fslot="${slot}" data-fname="${esc(f.name)}">
+          ${f.真 ? '<span class="chip gold" style="margin-right:4px">真</span>' : ''}${esc(f.name)}
+          <span class="d">${esc(f.desc)}</span></button>`;
+      const custom = createState.自定义 || [];
       body.innerHTML = `
         <div class="cr-step-label">第三步 / 六</div>
-        <div class="cr-title">气 运 抉 择</div>
-        <div class="cr-hint">可自选至多 3 条气运。每条气运都会真实改变规则——请量力而行。</div>
-        <div class="opts">${LUCK_TMP.map((l) => `
-          <button class="opt ${createState.气运.includes(l.name) ? 'on' : ''}" data-luck="${esc(l.name)}">
-            ${l.真 ? '<span class="chip gold" style="margin-right:4px">真</span>' : ''}${esc(l.name)}
-            <span class="d">${esc(l.向)}向 · ${esc(l.desc)}</span></button>`).join('')}</div>
-        <div class="cr-hint" style="margin-top:12px">已选 ${createState.气运.length} / 3</div>`;
-      const luckLeft = Math.max(0, trueLuckMax() - trueLuckUsed);
-      foot.innerHTML = `<button class="btn" id="cr-real">真·气运（5%）${luckLeft > 0 ? ` · 剩 ${luckLeft} 次` : ' · 已用尽'}</button><button class="btn primary" id="cr-next">下 一 步</button>`;
-      $('#cr-real').addEventListener('click', () => {
-        // 真·气运是 5% 稀有机制：必须掷骰（此前按钮直接入选，概率形同虚设）
-        if (trueLuckUsed >= trueLuckMax()) { toast('本次创角的气运抽取次数已用完'); return; }
-        trueLuckUsed += 1;
-        const got = drawTrueLuck(Math.random, D.LUCK_POOL, LUCK_TMP);
-        if (got) { LUCK_TMP.unshift(got); toast('天机应验：真·气运现世！'); }
-        else { toast('天机未应……真·气运（5%）此番未现'); }
+        <div class="cr-title">气 运 演 算</div>
+        <div class="cr-hint">一次演算给出候选，<b>凡道与合欢各只能定 1 条</b>。每条气运都带着原卡写明的代价 —— 请量力而行。</div>
+        ${LUCK ? '' : '<div class="cr-hint" style="color:var(--bad)">气运库还没载入（data/luck.json）。可以先继续，之后靠「📖 气运库」手选。</div>'}
+        <div class="set-row"><div class="lbl">合欢秘辛<div class="d">开启后合欢池的条目才会进候选，并按创角性别过滤</div></div>
+          <div class="switch ${FATE.ero ? 'on' : ''}" id="ft-ero"></div></div>
+        <div class="set-row"><div class="lbl">逆天改命<div class="d">${M.可出真 ? '演算时每个候选有 5% 换成同序号的「真·」强化版' : '本档（逆天而行）不出真·气运'}</div></div>
+          <div class="switch ${FATE.cheat ? 'on' : ''} ${M.可出真 ? '' : 'dis'}" id="ft-cheat" ${M.可出真 ? '' : 'aria-disabled="true"'}></div></div>
+        <div class="card" style="margin:10px 0">
+          <div class="kv"><span class="k">已定</span><span class="v">${esc(fateText(fatePickedList()).names) || '（还没定）'}</span></div>
+        </div>
+        <div class="sect-title">凡 道 候 选 <span class="n">${FATE.cands.normal.length}</span></div>
+        <div class="opts">${FATE.cands.normal.map((f) => chip(f, 'normal')).join('') || '<div class="cr-hint">先演算一次。</div>'}</div>
+        ${FATE.ero ? `<div class="sect-title">合 欢 候 选 <span class="n">${FATE.cands.ero.length}</span></div>
+          <div class="opts">${FATE.cands.ero.map((f) => chip(f, 'ero')).join('')}</div>` : ''}
+        ${M.可自定义 ? `<div class="sect-title">自 定 义 气 运 <span class="n">${custom.length}</span></div>
+          <div class="cr-hint">原卡规则：自定义气运优先级高于演算结果。可加多条。</div>
+          ${custom.map((c, i) => `<div class="set-row"><div class="lbl">${esc(c.name)}<div class="d">${esc(c.desc)}</div></div>
+            <button class="btn" data-fcustom-del="${i}" style="flex:none;min-width:52px;padding:8px 10px">删</button></div>`).join('')}
+          <div class="field" style="margin-top:8px"><input id="ft-cname" placeholder="气运名号，如：剑道独尊"></div>
+          <div class="field"><textarea id="ft-cdesc" rows="2" placeholder="气运描述（含代价）"></textarea></div>
+          <button class="btn" id="ft-cadd" style="width:100%">＋ 添 加 自 定 义 气 运</button>` : ''}`;
+      foot.innerHTML = `<button class="btn" id="ft-lib" ${LUCK ? '' : 'disabled style="opacity:.5"'}>📖 气运库</button>
+        <button class="btn" id="ft-roll" ${FATE.rollsLeft > 0 && LUCK ? '' : 'disabled style="opacity:.5"'}>${FATE.rollsLeft > 0 ? `天机演算 · 剩 ${FATE.rollsLeft} 次` : '天机已泄'}</button>
+        <button class="btn primary" id="cr-next">下 一 步</button>`;
+
+      $('#ft-ero').addEventListener('click', () => { FATE.ero = !FATE.ero; fateRoll(); renderCreate(); });
+      if (M.可出真) $('#ft-cheat').addEventListener('click', () => { FATE.cheat = !FATE.cheat; renderCreate(); });
+      $('#ft-roll').addEventListener('click', () => {
+        if (FATE.rollsLeft <= 0 || !LUCK) return;
+        FATE.rollsLeft -= 1;
+        fateRoll();
         renderCreate();
       });
+      $('#ft-lib').addEventListener('click', () => openFateLibrary());
+      $$('#cr-body [data-fslot]').forEach((b) => b.addEventListener('click', () => {
+        const slot = b.dataset.fslot;
+        const cur = FATE.picked[slot];
+        FATE.picked[slot] = cur && cur.name === b.dataset.fname
+          ? null
+          : (FATE.cands[slot].find((f) => f.name === b.dataset.fname)
+            || { name: b.dataset.fname, desc: findFate(LUCK, b.dataset.fname)?.desc || '', 真: b.dataset.fname.startsWith('真·'), 合欢: slot === 'ero' });
+        renderCreate();
+      }));
+      if (M.可自定义) {
+        $('#ft-cadd').addEventListener('click', () => {
+          const n = $('#ft-cname').value.trim();
+          const d = $('#ft-cdesc').value.trim();
+          if (!n) { toast('先给这条气想起个名号'); return; }
+          createState.自定义.push({ name: n, desc: d });
+          renderCreate();
+        });
+        $$('#cr-body [data-fcustom-del]').forEach((b) => b.addEventListener('click', () => {
+          createState.自定义.splice(Number(b.dataset.fcustomDel), 1);
+          renderCreate();
+        }));
+      }
     } else if (st === 3) {
       body.innerHTML = `
         <div class="cr-step-label">第四步 / 六</div>
@@ -369,7 +548,7 @@ import { retrieve } from './memory/retrieve.js';
           <div class="kv"><span class="k">性别</span><span class="v">${esc(g.性别)}</span></div>
           <div class="kv"><span class="k">出身</span><span class="v">${esc(g.出身 || '宗门外门')}</span></div>
           <div class="kv"><span class="k">灵根</span><span class="v">${g.灵根 ? g.灵根.品 + ' 灵根' : '未抽取'}</span></div>
-          <div class="kv"><span class="k">气运</span><span class="v">${g.气运.length ? g.气运.map(esc).join(' · ') : '无'}</span></div>
+          <div class="kv"><span class="k">气运</span><span class="v">${esc(fateText(fatePickedList()).names) || '无'}</span></div>
           <div class="kv"><span class="k">道侣</span><span class="v">${esc(g.道侣) || '天道自定'}</span></div>
           <div class="kv"><span class="k">出生界</span><span class="v">${esc(g.出生界)}</span></div>
         </div>`;
@@ -383,12 +562,6 @@ import { retrieve } from './memory/retrieve.js';
     // 通用：选项按钮
     $$('#cr-body [data-set]').forEach((b) => b.addEventListener('click', () => {
       createState[b.dataset.set] = b.dataset.v; renderCreate();
-    }));
-    $$('#cr-body [data-luck]').forEach((b) => b.addEventListener('click', () => {
-      const n = b.dataset.luck, i = createState.气运.indexOf(n);
-      if (i >= 0) createState.气运.splice(i, 1);
-      else if (createState.气运.length < 3) createState.气运.push(n);
-      renderCreate();
     }));
     const next = $('#cr-next');
     if (next) next.addEventListener('click', () => {
@@ -411,6 +584,7 @@ import { retrieve } from './memory/retrieve.js';
    * 规则（出身加成/灵石/道侣建档/玉简建档）全部在 engine/create.js，本函数只做状态替换与界面刷新。
    */
   function applyCreate() {
+    createState.气运 = fatePickedList();
     const fresh = applyCreateState(createState, { partnerPreset: (D.state && D.state.道侣) || {} });
 
     // 原地替换当前状态（state 被大量闭包共享，不能换引用）
@@ -790,6 +964,8 @@ import { retrieve } from './memory/retrieve.js';
       const b = await store.read(id);
       if (!b || !b.state) throw new Error('该存档没有状态数据');
       const next = normalizeState(deep(b.state));
+      // 旧档里的"自选 3 条"式气运按新池重建（裁决⑤：用新的替代，不保留旧名号）
+      if (LUCK) migrateFates(next, LUCK);
       // 原地替换：state 被大量闭包共享，不能换引用
       for (const k of Object.keys(state)) delete state[k];
       Object.assign(state, next);
@@ -1222,7 +1398,10 @@ import { retrieve } from './memory/retrieve.js';
       if (log) log.textContent = `${b.dataset.pk === 'n' ? '叙事' : '裁决'}模型已填：${b.dataset.m} —— 回本页按「保存」生效。`;
     }));
   }
-  function closeModelPicker() { $('#picker').classList.remove('open'); }
+  function closeModelPicker() {
+    if (LIB.open) { closeFateLibrary(); return; }
+    $('#picker').classList.remove('open');
+  }
   $('#picker').addEventListener('click', (e) => { if (e.target.id === 'picker') closeModelPicker(); });
 
   function newAssistantBubble() {
@@ -1799,6 +1978,7 @@ import { retrieve } from './memory/retrieve.js';
   /* ---------- 键盘（平板带键盘 / 桌面） ---------- */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (LIB.open) { closeFateLibrary(); return; }
       if ($('#picker').classList.contains('open')) { closeModelPicker(); return; }
       if ($('#judge').classList.contains('open')) {
         // 判定层：走"承认结果"而不是直接隐藏，否则叙事与存档都会缺这一回合
@@ -2267,6 +2447,17 @@ import { retrieve } from './memory/retrieve.js';
     if (wb) {
       console.info(`[worldbook] 已载入 ${wb.count} 条，可检索 ${WORLD_INDEX.stats.searchable} 条 / 常驻 ${WORLD_INDEX.stats.constant} 条`);
       if (curPanel === '图鉴') renderSidebar();
+    }
+  });
+
+  // 气运库（609 条原文）异步加载：就绪后把当前状态里的气运按新池重建
+  loadLuck().then((lk) => {
+    if (!lk) return;
+    console.info(`[luck] 已载入气运 ${lk.count} 条（凡道 ${lk.normal.length} · 真 ${lk.true.length} · 合欢 ${lk.ero.female.length + lk.ero.male.length + lk.ero.neutral.length}）`);
+    const { dropped } = migrateFates(state, lk);
+    if (dropped.length) {
+      console.info(`[luck] 旧档里有 ${dropped.length} 条卡内不存在的气运，已按原卡剔除：${dropped.join('、')}`);
+      renderHUD();
     }
   });
 

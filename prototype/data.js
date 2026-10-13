@@ -111,19 +111,10 @@ window.DY = (function () {
     },
   ];
 
-  /* ---------- 创角素材（regex8 气运池节选） ---------- */
-  const LUCK_POOL = [
-    { name: '过目不忘', 向: '通用', desc: '凡读过的功法口诀，皆可默记七分。' },
-    { name: '人生模拟器', 向: '通用', desc: '消耗灵石模拟未来人生，预知吉凶。' },
-    { name: '不化骨', 向: '通用', desc: '肉身坚硬如僵尸，不老不死，不入轮回。' },
-    { name: '混沌体', 向: '通用', desc: '天生混沌之体，万法皆可修行，无一不通。' },
-    { name: '先天道胎', 向: '通用', desc: '娘胎里便合了道，悟性远胜同辈。' },
-    { name: '鸿蒙紫气', 向: '通用', desc: '一缕鸿蒙紫气随身，气运绵长，天道难算。' },
-    { name: '深蓝加点', 向: '女性向', desc: '“深蓝，让我看看你的极限！”能量点足，功法瞬满。' },
-    { name: '每日签到系统', 向: '女性向', desc: '每天醒来签个到，神兵功法随机送。' },
-    { name: '莫欺少年穷', 向: '男性向', desc: '三十年河东三十年河西，越是被轻视，越强。' },
-    { name: '赘婿战神', 向: '男性向', desc: '人前受尽白眼，暗处已有九重身份。' },
-  ];
+  /* ---------- 创角素材 ---------- */
+  // 气运不再放这里：原先的 10 条是"人肉节选 + 顺手改写"，9 条把卡里写明的代价删了，
+  // 还有 1 条卡内根本不存在。全量 609 条原文改由 tools/build-luck.mjs 生成
+  // data/luck.json，运行时加载，保真由 tests/luck.fidelity.test.mjs 守着。
 
   /* ---------- 图鉴 / Wiki（世界书节选，真实条目标题） ---------- */
   const WORLD = [
@@ -152,5 +143,5 @@ window.DY = (function () {
     opencodego: { baseUrl: 'https://opencode.ai/zen/go/v1', endpointPath: '/chat/completions', requiresApiKey: true, autoHeaders: { 'x-opencode-session': 'uuid' } },
   };
 
-  return { RES, state, turns, LUCK_POOL, WORLD, PROVIDER_PRESETS };
+  return { RES, state, turns, WORLD, PROVIDER_PRESETS };
 })();

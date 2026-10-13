@@ -8,32 +8,12 @@
  */
 
 import { clamp } from '../core/clamp.js';
-import { pick } from '../core/rng.js';
 import { emptyState, normalize } from './state.js';
-import { drawRoot, hitTrueLuck } from './fate.js';
+import { drawRoot, findFate } from './fate.js';
 
 /** 抽灵根品阶（概率表在 engine/rules.js，与修炼产出同源）。 */
 export function drawRootTier(rng) {
   return drawRoot(rng);
-}
-
-/**
- * 真·气运抽取：5% 命中才升格；已存在的名字跳过（不重复）。
- * @returns {null | {name:string, 向:string, desc:string, 真:true}} 未命中返回 null
- */
-export function drawTrueLuck(rng, pool, existing = [], chance = 0.05) {
-  if (!hitTrueLuck(rng, chance)) return null;
-  const taken = new Set((existing || []).map((l) => l && l.name));
-  let guard = 0;
-  while (guard++ < 100) {
-    const base = pick(rng, pool);
-    if (!base) return null;
-    const name = `真·${base.name}`;
-    if (!taken.has(name)) {
-      return { name, 向: base.向, desc: base.desc, 真: true };
-    }
-  }
-  return null;
 }
 
 /** 道侣默认模板；没有预设设定时兜底用。 */
@@ -68,13 +48,19 @@ export function applyCreateState(g, opts = {}) {
   if (g.出身 === '宗门外门') fresh.主角.宗门贡献 = 120;
   if (g.灵根 && g.灵根.品 === '天品') fresh.主角.道心 = clamp(fresh.主角.道心 + 10, 0, 100);
 
-  for (const n of g.气运 || []) {
-    fresh.主角.气运[n] = {
-      类型: n.startsWith('真·') ? '主动' : '被动',
-      效果: '（创角所选气运）',
+  // 气运：照卡存"名号 + 原文效果"。效果必须留着 —— 卡里每条都写着代价，
+  // 只存名字等于让模型看不到代价。数值一律不改（裁决③A：与卡一致，纯文本注入）。
+  for (const f of g.气运 || []) {
+    const name = typeof f === 'string' ? f : f.name;
+    if (!name) continue;
+    const 合欢 = typeof f === 'string' ? false : !!f.合欢;
+    const 真 = typeof f === 'string' ? name.startsWith('真·') : !!f.真;
+    fresh.主角.气运[name] = {
+      类型: 合欢 ? '合欢' : (真 ? '真气运' : '凡道'),
+      效果: typeof f === 'string' ? '' : String(f.desc || ''),
       使用状态: '常驻',
       压制状态: '正常',
-      真: n.startsWith('真·'),
+      真,
     };
   }
 
@@ -102,6 +88,33 @@ export function applyCreateState(g, opts = {}) {
   }
 
   return normalize(fresh);
+}
+
+/**
+ * 旧档气运重建（裁决⑤：用新的替代，不保留旧名号）。
+ *
+ * 旧档里的气运是当初手写的 10 条，其中 9 条的描述被删过代价、1 条卡内根本没有。
+ * 这里按新池逐条重取：名号在池里 → 用卡内原文覆盖描述；不在 → 丢掉，不编造替代。
+ * @returns {{kept:string[], dropped:string[]}} 供界面提示"这条没了"
+ */
+export function migrateFates(state, luck) {
+  const kept = [];
+  const dropped = [];
+  if (!state || !state.主角 || !luck) return { kept, dropped };
+  const fates = state.主角.气运 || {};
+  for (const name of Object.keys(fates)) {
+    const e = findFate(luck, name);
+    if (!e) { delete fates[name]; dropped.push(name); continue; }
+    fates[name] = {
+      类型: e.合欢 !== 'normal' ? '合欢' : (e.真 ? '真气运' : '凡道'),
+      效果: e.desc,
+      使用状态: fates[name]?.使用状态 || '常驻',
+      压制状态: fates[name]?.压制状态 || '正常',
+      真: !!e.真,
+    };
+    kept.push(name);
+  }
+  return { kept, dropped };
 }
 
 /** 第 0 回合的开局叙事。 */
