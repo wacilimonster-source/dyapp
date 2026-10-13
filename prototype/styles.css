@@ -259,8 +259,11 @@ button { background: none; border: 0; cursor: pointer; }
 .scrim.open { opacity: 1; pointer-events: auto; }
 
 .pcard { display: flex; gap: 12px; margin-bottom: 12px; }
-.portrait { width: 64px; height: 64px; flex: 0 0 64px; border-radius: 10px; border: 1px solid var(--line); display: grid; place-items: center;
+.portrait { position: relative; width: 64px; height: 64px; flex: 0 0 64px; border-radius: 10px; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden;
   font-size: 1.5rem; color: var(--gold); background: radial-gradient(circle at 50% 20%, rgba(197, 138, 255, 0.22), transparent 70%), var(--bg-deep); }
+/* 立绘热链卡内作者的图床：图叠在首字兜底之上，挂了/没匹配上就把图藏掉 */
+.portrait > img, .bpic > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 0; }
+.pbad > img { display: none; }
 .pcard .meta { flex: 1; min-width: 0; }
 .pcard .nm { color: var(--gold); letter-spacing: 1px; }
 .heart { color: #ff7ea8; letter-spacing: 2px; font-size: 0.8rem; }
@@ -285,6 +288,8 @@ button { background: none; border: 0; cursor: pointer; }
 .bcard .nm { font-size: 1.02rem; margin: 4px 0 2px; }
 .bcard .tt { font-size: 0.74rem; color: var(--purple); }
 .bcard .pz { font-size: 0.74rem; color: var(--dim); margin-top: 6px; }
+.bpic { position: relative; aspect-ratio: 2 / 3; border-radius: 10px; border: 1px solid var(--line); overflow: hidden; display: grid; place-items: center; margin-bottom: 10px;
+  font-size: 1.8rem; color: var(--gold); background: radial-gradient(circle at 50% 15%, rgba(197, 138, 255, 0.2), transparent 70%), var(--bg-deep); }
 
 .phone-shell { border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--bg-deep); }
 .phone-shell .top { padding: 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; font-size: 0.8rem; color: var(--dim); }

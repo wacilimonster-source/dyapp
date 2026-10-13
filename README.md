@@ -43,6 +43,9 @@
 | `app.js` | 导航、创角向导、HUD、叙事流、13 个面板、判定演出 |
 | `update.js` | 检查更新模块：读 GitHub Releases、语义化版本比较、离线降级 |
 | `bridge.js` | **前端 ↔ Rust 壳的唯一通道**；浏览器里统一降级为"不可用" |
+| `data/worldbook.json` | 319 条世界书（`tools/build-worldbook.mjs` 从卡里抽出） |
+| `data/luck.json` | 609 条气运原文（`tools/build-luck.mjs`） |
+| `data/portraits.json` | 148 条人名→立绘**外链**（`tools/build-portraits.mjs`，图不入库；热链需 CSP 放行，见 `docs/03` §7） |
 
 运行：在 `prototype/` 目录起静态服务（如 `python -m http.server 8777`），浏览器访问 `http://127.0.0.1:8777/`。
 真机按屏幕宽度自动判定版式；桌面预览用右下角「手机 / 平板」开关切换。

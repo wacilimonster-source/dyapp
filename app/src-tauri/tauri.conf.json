@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://api.github.com https://github.com https://objects.githubusercontent.com",
+      "csp": "default-src 'self'; img-src 'self' data: blob: https://free-img.400040.xyz; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://api.github.com https://github.com https://objects.githubusercontent.com",
       "dangerousDisableAssetCspModification": false
     }
   },

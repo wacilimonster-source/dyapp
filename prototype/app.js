@@ -301,6 +301,61 @@ import { retrieve } from './memory/retrieve.js';
     }
   }
 
+  /* ================= 人物立绘（卡内的图床外链） ================= */
+  /** data/portraits.json：人名 → 卡内作者上传的立绘 URL。图不入库，只热链。 */
+  let PORTRAITS = null;
+
+  async function loadPortraits() {
+    try {
+      const res = await fetch('data/portraits.json', { cache: 'force-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      PORTRAITS = await res.json();
+      return PORTRAITS;
+    } catch (e) {
+      console.warn('[portraits] 立绘表加载失败，人物一律退回文字头像：', e.message);
+      return null;
+    }
+  }
+
+  /** 名字对齐：整名优先，命中不了再退到"卡内名号是本机键名的子串"（模型写的花名常带头衔）。 */
+  function portraitURL(name) {
+    if (!PORTRAITS) return '';
+    const key = String(name || '').trim();
+    if (!key) return '';
+    if (PORTRAITS.map[key]) return PORTRAITS.map[key];
+    let best = '';
+    for (const k of Object.keys(PORTRAITS.map)) {
+      if (k.length >= 2 && key.includes(k) && k.length > best.length) best = k;
+    }
+    return best ? PORTRAITS.map[best] : '';
+  }
+
+  /** 图 + 文字兜底：匹不到立绘（男配、灵宠）或图床挂了就显示首字。 */
+  function portraitHTML(name, cls) {
+    const fb = `<span class="pf">${esc(String(name || '？').trim().slice(0, 1))}</span>`;
+    const url = portraitURL(name);
+    if (!url) return `<div class="${cls} pbad">${fb}</div>`;
+    return `<div class="${cls}"><img src="${esc(url)}" alt="${esc(name)}" data-portrait="1" loading="lazy" decoding="async">${fb}</div>`;
+  }
+
+  /**
+   * 图床挂掉时返回的是它自己的 404 占位图（1200×800 的 SVG），浏览器按"加载成功"处理，
+   * onerror 不会触发 —— 所以判活要看尺寸，命中占位图就退回文字头像。
+   */
+  function markPortraitDead(img) {
+    const box = img.parentElement;
+    if (box) box.classList.add('pbad');
+  }
+  const portraitDead = (img) => !img.naturalWidth || (img.naturalWidth === 1200 && img.naturalHeight === 800);
+  document.addEventListener('load', (e) => {
+    const t = e.target;
+    if (t.tagName === 'IMG' && t.dataset.portrait && portraitDead(t)) markPortraitDead(t);
+  }, true);
+  document.addEventListener('error', (e) => {
+    const t = e.target;
+    if (t.tagName === 'IMG' && t.dataset.portrait) markPortraitDead(t);
+  }, true);
+
   /** 一次演算。`keepLocked` 对应卡内的 lockedNormal / lockedEro：已定的那条重 roll 时保留。 */
   function fateRoll() {
     if (!LUCK) return;
@@ -2154,7 +2209,7 @@ import { retrieve } from './memory/retrieve.js';
       return list.map(([k, c]) => `
         <div class="card" style="margin-bottom:12px">
           <div class="pcard">
-            <div class="portrait">${esc(k[0])}</div>
+            ${portraitHTML(k, 'portrait')}
             <div class="meta"><div class="nm">${esc(k)} <span style="color:var(--purple);font-size:.84rem">${esc(c.境界)}</span></div>
               <div class="heart">亲密 ${'❤'.repeat(Math.round(c.亲密 / 20))}${'♡'.repeat(5 - Math.round(c.亲密 / 20))} ${c.亲密}</div>
               <div style="color:var(--dim);font-size:.78rem;margin-top:4px">${esc(c.性别)} · ${esc(c.种族)} · ${esc(c.状态)}</div></div>
@@ -2173,7 +2228,7 @@ import { retrieve } from './memory/retrieve.js';
       return Object.entries(state.人物).map(([k, c]) => {
         const si = STAGES.indexOf(c.关系阶段);
         return `<div class="card" style="margin-bottom:12px">
-          <div class="pcard"><div class="portrait">${esc(k[0])}</div>
+          <div class="pcard">${portraitHTML(k, 'portrait')}
             <div class="meta"><div class="nm">${esc(k)} <span style="color:var(--purple);font-size:.84rem">${esc(c.境界)}</span></div>
               <div style="color:var(--dim);font-size:.8rem">${esc(c.头衔)}</div>
               <div class="chips" style="margin-top:6px"><span class="chip ${si >= 3 ? 'ok' : ''}">关系 · ${esc(c.关系阶段)}</span></div></div></div>
@@ -2205,9 +2260,10 @@ import { retrieve } from './memory/retrieve.js';
         `<div class="cr-hint" style="text-align:center">最多保留最近 20 条机遇，完成即归档。</div>`;
     }
     if (id === '绝色榜') {
-      return `<div class="cr-hint">仙子排行榜 · 遇到即解锁。红颜为虚名，仙途方为真。</div>
+      return `<div class="cr-hint">仙子排行榜 · 遇到即解锁。红颜为虚名，仙途方为真。<br>立绘热链卡内作者的图床，链接失效时自动退回名字首字。</div>
         <div class="grid-cards">${Object.entries(state.绝色榜).map(([k, b]) => `
-          <div class="bcard ${b.解锁 ? '' : 'lock'}"><div class="rk">第 ${esc(b.排名)} 位</div>
+          <div class="bcard ${b.解锁 ? '' : 'lock'}">${b.解锁 ? portraitHTML(k, 'bpic') : '<div class="bpic pbad"><span class="pf">？</span></div>'}
+            <div class="rk">第 ${esc(b.排名)} 位</div>
             <div class="nm">${esc(b.解锁 ? k : '？ ？ ？')}</div>
             <div class="tt">${esc(b.头衔)}</div>
             <div class="pz">${esc(b.仙姿)}</div>
@@ -2513,6 +2569,13 @@ import { retrieve } from './memory/retrieve.js';
       console.info(`[luck] 旧档里有 ${dropped.length} 条卡内不存在的气运，已按原卡剔除：${dropped.join('、')}`);
       renderHUD();
     }
+  });
+
+  // 立绘表（卡内作者上传的外链）异步加载：就绪后刷新正在看的人物类面板
+  loadPortraits().then((p) => {
+    if (!p) return;
+    console.info(`[portraits] 已载入立绘外链 ${p.count} 条 · 图床 ${p.hosts.join('、')}`);
+    if (['绝色榜', '人物', '道侣'].includes(curPanel)) renderSidebar(true);
   });
 
   // 存档列表
