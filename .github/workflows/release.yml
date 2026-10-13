@@ -6,11 +6,20 @@ name: release
 # 更新说明优先取 `release-notes/<tag>.md`（由人写、进仓库留档），没有该文件才退回自动生成。
 # **再次推送同一个 tag 是安全的**：Release 已存在时改为"更新说明 + 覆盖附件"，
 # 这样修一版说明不必删 Release，也不会把工作流刷红。
+#
+# 手动重跑要**显式给 tag**：`gh workflow run release.yml -f tag=v0.2.0`。
+# 不能像原来那样直接 workflow_dispatch——那时 `github.ref_name` 是分支名（main），
+# 脚本会把 main 当版本号去比对 VERSION，必然对不上（这是个坑，已修）。
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发版/重跑的 tag（必须已存在，形如 v0.2.0）'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,31 +27,40 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # push 事件取 tag 名；手动触发取输入。两处都用它，别再直接读 GITHUB_REF_NAME。
+      TAG_REF: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: 校验 tag 与 VERSION 一致
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${TAG_REF#v}"
           VER="$(tr -d '[:space:]' < VERSION)"
           echo "tag=$TAG  VERSION=$VER"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            echo "::error::拿不到 tag（TAG_REF=$TAG_REF）。手动触发请传 tag 输入，例如 -f tag=v0.2.0"
+            exit 1
+          fi
           if [ "$TAG" != "$VER" ]; then
-            echo "::error::tag $GITHUB_REF_NAME 与 VERSION($VER) 不一致，先改 VERSION 再打 tag"
+            echo "::error::tag $TAG_REF 与 VERSION($VER) 不一致，先改 VERSION 再打 tag"
             exit 1
           fi
 
       - name: 打包原型（当前可交付物）
         run: |
           cd prototype
-          zip -r "../dyapp-prototype-${GITHUB_REF_NAME}.zip" . -x '*.DS_Store' '*/__MACOSX/*'
-          ls -lh "../dyapp-prototype-${GITHUB_REF_NAME}.zip"
+          zip -r "../dyapp-prototype-${TAG_REF}.zip" . -x '*.DS_Store' '*/__MACOSX/*'
+          ls -lh "../dyapp-prototype-${TAG_REF}.zip"
 
       - name: 创建或更新 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${TAG_REF}"
           ZIP="dyapp-prototype-${TAG}.zip"
           NOTES="release-notes/${TAG}.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -76,8 +94,12 @@ jobs:
     needs: release
     continue-on-error: true
     runs-on: ubuntu-latest
+    env:
+      TAG_REF: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -129,8 +151,8 @@ jobs:
           set -e
           APK="$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*-unsigned.apk' | head -1)"
           if [ -z "$APK" ]; then echo "::error::没找到未签名 APK 产物"; exit 1; fi
-          OUT="dyapp-${GITHUB_REF_NAME#v}-universal-unsigned.apk"
+          OUT="dyapp-${TAG_REF#v}-universal-unsigned.apk"
           cp "$APK" "$OUT"
           ls -lh "$OUT"
-          gh release upload "${GITHUB_REF_NAME}" "$OUT" --clobber
+          gh release upload "$TAG_REF" "$OUT" --clobber
           echo "::notice::APK 未签名，安装前请自行签名（docs/03 第 7.3 节）"
