@@ -12,7 +12,11 @@ import { constantText } from '../memory/index.js';
 
 export const LAYER_BUDGET = Object.freeze({
   L0: 260,
-  L1: 1400,
+  // L1 世界法则：1400→3750（×1.6 = 6000 字）。
+  // 原来 2240 字实测只塞得进 6 条常驻法则，DC 压制表 / 具体数值口径 / 道心档位
+  // 这些引擎自己在用的规则根本没进提示词 —— 模型只能凭感觉写，再被裁决层事后夹。
+  // 放宽是有意的代价：每回合多约 2-3k 输入 token。
+  L1: 3750,
   L2: 1200,
   L3: 260,
   // L3.5：往昔回顾（窗口之外回合的抽取式摘要，见 memory/recap.js）
@@ -57,6 +61,9 @@ export function composeNarrative({ action, index, state, retrieved = [], recent 
         total: L1.total,
         // 被截断的常驻条目要能看见：否则"世界法则少了半条"在界面上完全没有痕迹
         truncated: L1.truncated,
+        // 一条都没塞进来的更要看见
+        skipped: L1.skipped,
+        used: L1.used,
       });
     }
   }

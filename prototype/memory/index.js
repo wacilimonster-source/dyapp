@@ -69,7 +69,11 @@ export function buildIndex(worldbook, opts = {}) {
   const realm = opts.realm || '';
   const all = (worldbook?.entries || []).filter((e) => e && e.content);
 
-  const usable = all.filter((e) => (e.enabled !== false || e.constant) && !isPromptExcluded(e));
+  // 卡内标了 enabled=False 的条目，作者就是关掉的 —— 常驻也不给进提示词。
+  // 原先写成 `(e.enabled !== false || e.constant)`，于是 25 条停用条目里有 9 条
+  // 重新进了候选池，其中「玄天界灵石体系」还排在启用中的 DC/道心/时间 之前；
+  // 预算一放宽，被作者关掉的内容就会挤掉核心规则。图鉴面板不受影响（那里是文档）。
+  const usable = all.filter((e) => e.enabled !== false && !isPromptExcluded(e));
   const realmFit = usable.filter((e) => !e.realm || !realm || e.realm === realm);
 
   const constant = realmFit.filter((e) => e.constant && !isConstantExcluded(e));
@@ -110,8 +114,8 @@ export function buildIndex(worldbook, opts = {}) {
  */
 export function constantText(index, { maxChars = 6000 } = {}) {
   // 「元规则/自查」类条目（卡里的"合理性审查"三重人格）降到最后排，并单独限量。
-  // 为什么：它单条 2604 字，而 L1 预算约 2240 字——若不降级，常驻法则里就只有它，
-  // 境界/数值/礼仪/时间这些真正每回合都要用的规则全被挤掉。
+  // 为什么：它单条 2604 字，而 L1 预算（现 6000 字）里真正每回合要用的规则有二十几条
+  // ——若不降级，光它一条就吃掉近半预算，境界/数值/礼仪/时间这些反而被挤掉。
   // 主方案第 3.8 节的意图是"保留叙事性自查"，所以不删，只是不许它抢位置。
   const demoted = (e) => constantTier(e) >= 3;
   const sorted = index.constant
@@ -126,10 +130,11 @@ export function constantText(index, { maxChars = 6000 } = {}) {
 
   const parts = [];
   const truncated = [];
+  const skipped = [];
   let used = 0;
   for (const e of sorted) {
     const remaining = maxChars - used;
-    if (remaining <= 0) break;
+    if (remaining <= 0) { skipped.push(e.title); continue; }
     const room = Math.min(remaining, perEntryCap(e));
     if (e.content.length <= room) {
       parts.push(`【${e.title}】\n${e.content}`);
@@ -140,6 +145,7 @@ export function constantText(index, { maxChars = 6000 } = {}) {
     truncated.push(e.title);
     used += room;
   }
-  // truncated 会告诉调用方哪些条目被截断，便于在预览面板里标出来
-  return { text: parts.join('\n\n'), used, included: parts.length, total: sorted.length, truncated };
+  // truncated 会告诉调用方哪些条目被截断；skipped 告诉哪些**一条都没进**——
+  // 没有后者，"世界法则只进了 6/26 条"在界面上完全没有痕迹。
+  return { text: parts.join('\n\n'), used, included: parts.length, total: sorted.length, truncated, skipped };
 }

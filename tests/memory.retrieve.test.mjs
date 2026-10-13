@@ -121,3 +121,36 @@ test('estimateTokens：中文按 1.6 字/token 估算', () => {
   assert.equal(estimateTokens('十六个字'), Math.ceil(4 / 1.6));
   assert.equal(estimateTokens(''), 0);
 });
+
+/* ------------------- 停用条目与常驻预算（2026-10-13 对照报告后补） ------------------- */
+
+test('卡内 enabled=false 的条目一律不进提示词（常驻也不行）', () => {
+  const disabled = new Set(worldbook.entries.filter((e) => e.enabled === false).map((e) => e.title));
+  assert.ok(disabled.size > 0, '世界书里确实有停用条目，否则这条测试没意义');
+  const idx = buildIndex(worldbook, { realm: '玄天界' });
+  const leaked = [...idx.constant, ...idx.entries].filter((e) => disabled.has(e.title));
+  assert.deepEqual(leaked.map((e) => e.title), [], '被作者关掉的条目又进了候选池');
+});
+
+test('停用条目里字数最大的那条（玄天界关键人物 5024 字）不再挤占候选', () => {
+  const idx = buildIndex(worldbook, { realm: '玄天界' });
+  assert.equal(idx.constant.find((e) => e.title === '玄天界关键人物'), undefined);
+  assert.equal(idx.constant.find((e) => e.title === '玄天界灵石体系'), undefined);
+});
+
+test('constantText 报告"一条都没塞进来"的条目，且账对得上', () => {
+  const idx = buildIndex(worldbook, { realm: '玄天界' });
+  const r = constantText(idx, { maxChars: Math.round(3750 * 1.6) });
+  assert.equal(r.included + r.skipped.length, r.total, '收录 + 未收录 必须等于候选总数');
+  assert.ok(r.skipped.length > 0, '预算有限，必然有未收录条目，否则 skipped 永远为空、测不出问题');
+  assert.ok(!r.skipped.some((t) => r.text.includes(`【${t}】`)), '被报为未收录的条目不该又出现在文本里');
+});
+
+test('放宽后的 L1 预算必须把引擎自己在用的核心规则装进去', () => {
+  const idx = buildIndex(worldbook, { realm: '玄天界' });
+  const r = constantText(idx, { maxChars: Math.round(3750 * 1.6) });
+  // 这几条是引擎数值口径的直接来源：模型看不到就会写出与账本不合的正文
+  for (const must of ['具体数值', 'DC点数判定', '灵根', '时间', '境界']) {
+    assert.ok(r.text.includes(`【${must}】`), `${must} 必须进入每回合提示词`);
+  }
+});
