@@ -106,10 +106,6 @@
 6. **滚动摘要为抽取式**：`memory/recap.js` 把窗口外的回合压成"时间·地点 + 正文开头"注入 L3.5；语义级归纳（模型摘要）留作后续，接口不变。
 7. **产物构建为手动触发**：`.github/workflows/build-artifacts.yml`（Windows msi/nsis + 安卓 APK），首次运行需在 Actions 页观察一次。
 
-
-- 远端：<https://github.com/wacilimonster-source/dyapp>（公开）
-- 当前版本：[`VERSION`](VERSION)（单一真源，需与 `prototype/update.js` 的 `VERSION` 一致，CI 会校验）
-- 发版：改 `VERSION` 与 `update.js` → `git tag vX.Y.Z` → push tag，CI 自动建 Release 并附产物
 ---
 
 ## 仓库与发版
