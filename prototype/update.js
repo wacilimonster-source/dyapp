@@ -12,7 +12,7 @@ window.DYUpdate = (function () {
   const REPO = 'wacilimonster-source/dyapp';
   const API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const PAGE = 'https://github.com/' + REPO + '/releases';
-  const VERSION = '0.5.0';                 // 当前版本，发版时同步 VERSION 文件
+  const VERSION = '0.6.0';                 // 当前版本，发版时同步 VERSION 文件
   const LS_AUTO = 'dy.update.auto';
   const TIMEOUT_MS = 8000;
 
