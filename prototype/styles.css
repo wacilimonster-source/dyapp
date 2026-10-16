@@ -394,12 +394,12 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
   border-radius: 10px; color: var(--dim); font-size: 0.66rem; border: 1px solid transparent; }
 #app[data-layout="tablet"] .rail .rbtn .i { font-size: 1.25rem; }
 #app[data-layout="tablet"] .rail .rbtn.on { color: var(--gold); border-color: rgba(212, 175, 55, 0.4); background: var(--gold-soft); }
-/* 矮屏（768 高的横屏平板，也是多数安卓平板）把按钮压到 52/48px：16 个入口尽量都露出来，
-   48px 正是安卓的触控下限。必须写在 .rbtn 之后，否则同特异性的 56px 会盖掉它。 */
+/* 矮屏（768 高的横屏平板，也是多数安卓平板）把按钮压到 48px：48 正是安卓的触控下限，
+   再矮就不是"点得准"的问题了。必须写在 .rbtn 之后，否则同特异性的 56px 会盖掉它。 */
 @media (max-height: 860px) {
   #app[data-layout="tablet"] .rail { gap: 3px; }
-  #app[data-layout="tablet"] .rail .rbtn { min-height: 52px; }
-  #app[data-layout="tablet"] .rail .rail-foot .rbtn { min-height: 48px; }
+  #app[data-layout="tablet"] .rail .rbtn { min-height: 48px; }
+  #app[data-layout="tablet"] .rail .rbtn .i { font-size: 1.1rem; }
 }
 
 #app[data-layout="tablet"] .sidebar { position: relative; inset: auto; transform: none; width: 372px; flex: 0 0 372px; }
