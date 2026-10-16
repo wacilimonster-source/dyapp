@@ -161,7 +161,7 @@ button { background: none; border: 0; cursor: pointer; }
 .hud .name { color: var(--gold); font-weight: 700; letter-spacing: 1px; }
 .hud .realm { color: var(--purple); font-size: 0.82rem; }
 .hud .spacer { flex: 1; }
-.hud .iconbtn { min-width: 38px; min-height: 38px; display: grid; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 1rem; }
+.hud .iconbtn { min-width: var(--tap); min-height: var(--tap); display: grid; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 1rem; }
 .hud-row2 { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 0.74rem; color: var(--dim); }
 .hud .crisis { padding: 1px 9px; border-radius: 999px; border: 1px solid var(--line); }
 .hud .crisis.lv1 { color: var(--ok); border-color: rgba(111, 212, 154, 0.4); }
@@ -202,12 +202,14 @@ button { background: none; border: 0; cursor: pointer; }
 .sugg { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
 .sugg::-webkit-scrollbar { display: none; }
 .sugg:empty { display: none; }
-.sugg .c { flex: 0 0 auto; min-height: 34px; font-size: 0.78rem; padding: 7px 12px; border-radius: 999px;
+.sugg .c { flex: 0 0 auto; min-height: var(--tap); font-size: 0.78rem; padding: 7px 12px; border-radius: 999px;
   border: 1px dashed rgba(212, 175, 55, 0.45); color: var(--gold); background: rgba(212, 175, 55, 0.05); white-space: nowrap; }
 .sugg .c:active { transform: scale(0.97); }
 .sugg .c .k { color: var(--faint); font-size: 0.9em; margin-right: 4px; }
-/* 4 个主行动 + 更多 */
-.row-main { display: grid; grid-template-columns: repeat(4, 1fr) 52px; gap: 7px; }
+/* 5 个主行动 + 更多：模板必须跟 MAIN_ACTS 的数量一致。
+   踩过的坑——加了「斗法」后这里还写着 repeat(4,1fr)，第 5 个（交流）被塞进 52px 的「更多」格
+   （实测 52×58 vs 其他 117×58），「更多」自己掉到第二行白占 73px。 */
+.row-main { display: grid; grid-template-columns: repeat(5, 1fr) 52px; gap: 7px; }
 .row-main .act { min-height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   border: 1px solid var(--line); border-radius: 10px; background: rgba(0, 0, 0, 0.22); color: var(--dim); font-size: 0.68rem; padding: 6px 2px; }
 .row-main .act:active { transform: scale(0.96); border-color: var(--gold); }
@@ -237,23 +239,30 @@ button { background: none; border: 0; cursor: pointer; }
 .sb-head { display: flex; align-items: center; gap: 10px; padding: calc(8px + var(--sat)) 12px 10px; border-bottom: 1px solid var(--line); }
 .sb-head .t { flex: 1; color: var(--gold); letter-spacing: 3px; }
 .sb-head .close { min-width: var(--tap); min-height: var(--tap); display: grid; place-items: center; color: var(--dim); font-size: 1.3rem; }
-.side-collapse { display: none; min-width: 38px; min-height: 38px; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.9rem; }
+.side-collapse { display: none; min-width: var(--tap); min-height: var(--tap); place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.9rem; }
 /* 注意选择器要带 .hud：按钮同时有 .iconbtn，而 .hud .iconbtn(0,2,0) 会盖掉 .rail-toggle(0,1,0)，
    手机上就会露出这个本该只在平板出现的按钮（真机上实测到了）。 */
-.hud .rail-toggle { display: none; min-width: 38px; min-height: 38px; place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.95rem; }
+.hud .rail-toggle { display: none; min-width: var(--tap); min-height: var(--tap); place-items: center; color: var(--dim); border: 1px solid var(--line); border-radius: 9px; font-size: 0.95rem; }
 #app[data-layout="tablet"] .hud .rail-toggle { display: grid; }
 /* 面板 tab：手机分「常用 / 更多」两组，平板单行横滑 */
 .sb-tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; align-content: flex-start; padding: 8px 12px; border-bottom: 1px solid var(--line);
   /* 换行而不是单行横向滚：桌面/安卓横屏侧栏只有 372px，单行会把第 5 个之后的面板裁到框外，
-     而 Windows 的鼠标滚轮不驱动横向滚动 —— 实测导致「模型」页在 exe 里完全点不到。 */
-  flex: 0 0 auto; max-height: 132px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+     而 Windows 的鼠标滚轮不驱动横向滚动 —— 实测导致「模型」页在 exe 里完全点不到。
+     高度上限跟 tab 高（var(--tap)=44px）耦合：展开「更多」后 15 个 tab 排 4 行
+     = 4×44 + 3×6 + 上下 16 = 210，所以上限给 212。若只按 3 行给（164），
+     被裁掉的恰好是「存档 / 模型 / 同步 / 设置」这四个配置入口（实测）。 */
+  flex: 0 0 auto; max-height: 212px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .sb-tabs::-webkit-scrollbar { width: 6px; }
 .sb-tabs::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 .sb-tabs .g-label { color: var(--faint); font-size: 0.68rem; letter-spacing: 1px; margin-right: 2px; flex: 0 0 auto; }
 .sb-tabs.collapsed-more .grp-more { display: none; }
-.sb-tabs .tab { flex: 0 0 auto; min-height: 34px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+.sb-tabs .tab { flex: 0 0 auto; min-height: var(--tap); padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
 .sb-tabs .tab.on { color: var(--gold); border-color: rgba(212, 175, 55, 0.5); background: var(--gold-soft); }
 .sb-tabs .tab.more { color: var(--purple); border-color: rgba(197, 138, 255, 0.4); }
+/* 设置页的「小 / 中 / 大」字号按钮也带 .tab，但不在 tab 条里，落成了裸按钮：
+   实测只有 15×24（手机上点不中），且没有选中态。这里补上最小可点尺寸与高亮。 */
+#sb-body .tab { min-width: var(--tap); min-height: var(--tap); padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); font-size: 0.78rem; }
+#sb-body .tab.on { color: var(--gold); border-color: rgba(212, 175, 55, 0.5); background: var(--gold-soft); }
 .sb-body { flex: 1; overflow-y: auto; padding: 14px 14px calc(20px + var(--sab)); }
 .scrim { position: absolute; inset: 0; z-index: 30; background: rgba(4, 7, 14, 0.6); opacity: 0; pointer-events: none; transition: opacity 0.25s; backdrop-filter: blur(2px); }
 .scrim.open { opacity: 1; pointer-events: auto; }
@@ -281,6 +290,9 @@ button { background: none; border: 0; cursor: pointer; }
 .opp-card .quote { color: var(--faint); font-size: 0.78rem; font-style: italic; margin-top: 8px; }
 
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+/* 手机：立绘把每张卡撑到 373px 高，两列一屏只放得下 5 张（绝色榜满 20 位要约 6 屏）。
+   改三列后立绘正好是 2:3、不裁切，一屏能看到 6 张以上。 */
+#app[data-layout="phone"] .grid-cards { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); }
 .bcard { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px;
   background: linear-gradient(180deg, rgba(197, 138, 255, 0.07), transparent 60%), var(--card); }
 .bcard.lock { opacity: 0.42; }
@@ -345,7 +357,7 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
   border: 1px solid var(--line); border-radius: 16px; background: var(--card); animation: pop 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.3); }
 .picker-h { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .picker-h .t { color: var(--gold); letter-spacing: 2px; font-size: 0.95rem; }
-.picker-h .x { margin-left: auto; min-width: 34px; min-height: 34px; border-radius: 9px; border: 1px solid var(--line); color: var(--dim); font-size: 1.1rem; }
+.picker-h .x { margin-left: auto; min-width: var(--tap); min-height: var(--tap); border-radius: 9px; border: 1px solid var(--line); color: var(--dim); font-size: 1.1rem; }
 .picker-list { flex: 1; overflow-y: auto; padding: 8px 10px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .picker-list::-webkit-scrollbar { width: 8px; }
 .picker-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
@@ -354,7 +366,7 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
 .mrow + .mrow { margin-top: 2px; }
 .mrow:hover { background: var(--card-2); }
 .mrow .nm { flex: 1; min-width: 0; font-size: 0.84rem; color: var(--txt); word-break: break-all; }
-.mrow .pick { flex: 0 0 auto; min-width: 52px; min-height: 30px; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); font-size: 0.74rem; }
+.mrow .pick { flex: 0 0 auto; min-width: var(--tap); min-height: var(--tap); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); font-size: 0.74rem; }
 .mrow .pick.on { color: var(--gold); border-color: rgba(212, 175, 55, 0.5); background: var(--gold-soft); }
 .duel { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .duel .side { flex: 1; } .duel .side .nm { font-size: 0.84rem; }
@@ -369,13 +381,26 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
 
 /* ================= 平板版式 ================= */
 #app[data-layout="tablet"] .rail { display: flex; flex-direction: column; gap: 4px; width: 86px; flex: 0 0 86px;
-  border-right: 1px solid var(--line); background: var(--bg-deep); padding: calc(10px + var(--sat)) 8px calc(10px + var(--sab)); overflow-y: auto; }
+  border-right: 1px solid var(--line); background: var(--bg-deep); padding: calc(10px + var(--sat)) 8px calc(10px + var(--sab)); overflow: hidden; }
 #app[data-layout="tablet"] .rail .logo { text-align: center; color: var(--gold); letter-spacing: 3px; font-size: 0.86rem; margin-bottom: 8px; flex: 0 0 auto; }
+/* 中段可滚、底部五项钉住：768 高的平板上 16 个入口共 1013px，全塞进一列会让
+   「存档 / 模型 / 同步 / 设置 / 主菜单」滑出可视区（实测首屏看不见，而且没有滚动提示）。
+   钉住的选型按"玩到一半最不想翻找的"来定：进出档 + 首次装机就要配的三个 + 回主菜单。 */
+#app[data-layout="tablet"] .rail .rail-mid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+#app[data-layout="tablet"] .rail .rail-foot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px;
+  border-top: 1px solid var(--line); padding-top: 6px; }
 #app[data-layout="tablet"] .rail .rbtn { flex: 0 0 auto; min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   border-radius: 10px; color: var(--dim); font-size: 0.66rem; border: 1px solid transparent; }
 #app[data-layout="tablet"] .rail .rbtn .i { font-size: 1.25rem; }
 #app[data-layout="tablet"] .rail .rbtn.on { color: var(--gold); border-color: rgba(212, 175, 55, 0.4); background: var(--gold-soft); }
-#app[data-layout="tablet"] .rail .spacer { flex: 1; }
+/* 矮屏（768 高的横屏平板，也是多数安卓平板）把按钮压到 52/48px：16 个入口尽量都露出来，
+   48px 正是安卓的触控下限。必须写在 .rbtn 之后，否则同特异性的 56px 会盖掉它。 */
+@media (max-height: 860px) {
+  #app[data-layout="tablet"] .rail { gap: 3px; }
+  #app[data-layout="tablet"] .rail .rbtn { min-height: 52px; }
+  #app[data-layout="tablet"] .rail .rail-foot .rbtn { min-height: 48px; }
+}
 
 #app[data-layout="tablet"] .sidebar { position: relative; inset: auto; transform: none; width: 372px; flex: 0 0 372px; }
 #app[data-layout="tablet"] .sb-head .close { display: none; }

@@ -205,11 +205,17 @@ import { retrieve } from './memory/retrieve.js';
     railCollapsed = !railCollapsed;
     applyCollapse();
   }
+  /**
+   * 右栏收起/展开。**不传参数** = 按当前状态真切换（收起→展开，展开→收起）。
+   * 传 `false` = 收起，传 `true` = 展开。
+   * 踩过的坑：收起按钮和下滑手势原先都写成 `toggleSide(true)`，两个方向都在"展开"，
+   * 于是平板上根本收不起右栏（实测点了箭头宽度 372→372 不变）。
+   */
   function toggleSide(force) {
     const side = $('#sidebar');
     if (!side) return;
     const nowMini = side.classList.contains('mini');
-    sideCollapsed = typeof force === 'boolean' ? !force : !nowMini ? true : false;
+    sideCollapsed = typeof force === 'boolean' ? !force : !nowMini;
     applyCollapse();
   }
 
@@ -2050,9 +2056,15 @@ import { retrieve } from './memory/retrieve.js';
     renderRail();
   }
   function renderRail() {
-    $('#rail').innerHTML = `<div class="logo">道渊</div>` +
-      PANELS.map((p) => `<button class="rbtn ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}"><span class="i">${p.icon}</span>${p.id}</button>`).join('') +
-      `<div class="spacer"></div><button class="rbtn" id="rail-home"><span class="i">⎋</span>主菜单</button>`;
+    // 768 高的平板上 15 个入口 + 主菜单 = 1013px，塞不进可视区。把「存档 / 模型 / 同步 / 设置 / 主菜单」
+    // 钉在底部固定可见（这几个是配置与进出档的入口，找不到最伤），中间那段自己滚。
+    const PINNED = ['存档', '模型', '同步', '设置'];
+    const btn = (p) => `<button class="rbtn ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}"><span class="i">${p.icon}</span>${p.id}</button>`;
+    const main = PANELS.filter((p) => !PINNED.includes(p.id));
+    const foot = PINNED.map((id) => btn(PANELS.find((p) => p.id === id)));
+    $('#rail').innerHTML = `<div class="logo">道渊</div>
+      <div class="rail-mid">${main.map(btn).join('')}</div>
+      <div class="rail-foot">${foot.join('')}<button class="rbtn" id="rail-home"><span class="i">⎋</span>主菜单</button></div>`;
     $$('#rail [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
     $('#rail-home').addEventListener('click', () => showScreen('s-boot'));
   }
@@ -2077,7 +2089,7 @@ import { retrieve } from './memory/retrieve.js';
   $('#sb-close').addEventListener('click', closePanel);
   $('#scrim').addEventListener('click', closePanel);
   const sc = $('#side-collapse');
-  if (sc) sc.addEventListener('click', () => toggleSide(true));
+  if (sc) sc.addEventListener('click', () => toggleSide());
 
   // 点空白处收起「更多」弹层
   document.addEventListener('click', (e) => {
@@ -2143,7 +2155,7 @@ import { retrieve } from './memory/retrieve.js';
       y0 = null;
       // 手机：下滑关闭抽屉；平板：下滑收起右栏
       if (dy > 70) {
-        if (app.dataset.layout === 'tablet') toggleSide(true); else closePanel();
+        if (app.dataset.layout === 'tablet') toggleSide(); else closePanel();
       }
     });
     // 手势被系统打断（来电/返回手势/滚动接管）时也要复位，
@@ -2181,10 +2193,10 @@ import { retrieve } from './memory/retrieve.js';
           ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '道心' ? daoStage(P.道心) : '')).join('')}
         </div>
         <div class="sect-title">容 貌 形 止</div>
-        <div class="card"><div class="kv"><span class="k">容貌</span><span class="v">${esc(P.容貌)}</span></div>
-          <div class="kv"><span class="k">身形</span><span class="v">${esc(P.身形)}</span></div>
-          <div class="kv"><span class="k">衣着</span><span class="v">${esc(P.衣着)}</span></div>
-          <div class="kv"><span class="k">神念</span><span class="v">${esc(P.神念)}</span></div>
+        <div class="card"><div class="kv"><span class="k">容貌</span><span class="v">${esc(P.容貌 || '未定')}</span></div>
+          <div class="kv"><span class="k">身形</span><span class="v">${esc(P.身形 || '未定')}</span></div>
+          <div class="kv"><span class="k">衣着</span><span class="v">${esc(P.衣着 || '未定')}</span></div>
+          <div class="kv"><span class="k">神念</span><span class="v">${esc(P.神念 || '未定')}</span></div>
           <div class="kv"><span class="k">宗门贡献</span><span class="v">${P.宗门贡献}</span></div></div>
         <div class="sect-title">☯ 气 运 <span class="n">${Object.keys(P.气运).length}</span></div>
         ${Object.entries(P.气运).map(([k, v]) => `<div class="card" style="margin-bottom:8px">
