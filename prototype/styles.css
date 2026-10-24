@@ -474,3 +474,43 @@ a.btn { display: flex; align-items: center; justify-content: center; text-decora
 /* 突破按钮不可用态（修为未满 100） */
 #actions .act.dim { opacity: .45; }
 
+/* ================= 0.8 新增：账单 / 器灵低语 / 首启向导 ================= */
+.bill { margin-top: 6px; font-size: 0.68rem; color: var(--faint); letter-spacing: 0.5px; text-align: right; }
+.whisper {
+  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 54px); left: 50%;
+  transform: translate(-50%, -8px);
+  max-width: min(560px, 86vw); padding: 8px 14px; border-radius: 10px;
+  background: rgba(16, 20, 34, 0.92); border: 1px solid rgba(212, 175, 55, 0.35);
+  color: #cdbff0; font-size: 0.82rem; line-height: 1.6; text-align: center;
+  opacity: 0; transition: opacity .5s, transform .5s; pointer-events: none; z-index: 1200;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+.whisper.show { opacity: 1; transform: translate(-50%, 0); }
+.tl-spirit { margin: 8px 0 2px; color: #cdbff0; font-size: 0.8rem; text-align: left; opacity: 0.9; }
+
+.wiz { max-width: 520px; margin: 0 auto; padding: max(8vh, 40px) 18px 24px; text-align: center; }
+.wiz .t { color: var(--gold); letter-spacing: 6px; font-size: 1.5rem; margin-bottom: 8px; }
+.wiz .d { color: var(--dim); font-size: 0.82rem; margin-bottom: 18px; }
+.wiz-steps { display: flex; justify-content: center; gap: 8px; align-items: center; color: var(--dim); font-size: 0.78rem; margin-bottom: 14px; }
+.wiz-steps .on { color: var(--gold); }
+.wiz-steps i { font-style: normal; opacity: 0.5; }
+.wiz-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: left; }
+.wcard { display: flex; flex-direction: column; gap: 4px; padding: 14px; min-height: 64px;
+  border: 1px solid var(--line); border-radius: 12px; background: rgba(0, 0, 0, 0.22);
+  color: var(--txt); font-size: 0.85rem; }
+.wcard span { color: var(--dim); font-size: 0.74rem; }
+.wcard.on { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.wiz .inp, #s-wizard input.inp {
+  width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 8px; font-size: 0.85rem;
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); color: var(--txt);
+}
+.wiz .lbl { color: var(--dim); font-size: 0.76rem; text-align: left; }
+.wiz-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; max-height: 150px; overflow: auto; }
+.wiz-msg { margin-top: 10px; font-size: 0.8rem; line-height: 1.6; text-align: left; border-radius: 8px; padding: 8px 10px; }
+.wiz-msg.ok { color: #6fd49a; background: rgba(111, 212, 154, 0.08); }
+.wiz-msg.bad { color: #ff9d94; background: rgba(255, 122, 107, 0.08); }
+.wiz-foot { display: flex; justify-content: center; gap: 8px; margin-top: 16px; }
+.wiz-foot .btn { min-width: 108px; }
+#s-wizard .btn:disabled { opacity: 0.55; }
+.phone-shell .line .msg.typing::after { content: '…'; animation: dydots 1.2s steps(3) infinite; }
+@keyframes dydots { 0% { content: '.'; } 50% { content: '..'; } 100% { content: '...'; } }

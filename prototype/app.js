@@ -19,6 +19,11 @@ import { parsePreset, toStPreset, SUPPORTED_SAMPLING } from './preset/schema.js'
 import { SUPPORTED_MACROS } from './preset/macros.js';
 import { createPresetStore } from './preset/store.js';
 import { buildPromptPlan } from './narrator/plan.js';
+import { streamNarrative } from './narrator/client.js';
+import { buildContactMessages } from './narrator/reply.js';
+import { record as recordUsage, summary as usageSummary, formatBill, compact as compactUsage, emptyUsage } from './ui/usage.js';
+import { classifyConnError } from './ui/wizard.js';
+import { pickSpiritLine } from './engine/voice.js';
 import { retrieve } from './memory/retrieve.js';
 
 (function () {
@@ -900,6 +905,7 @@ import { retrieve } from './memory/retrieve.js';
   async function runEngineTurnInner(action, opts = {}) {
     const { bubble, wrap } = newAssistantBubble();
     const llm = window.DYApp.available() && LLM.ready ? window.DYApp.llm : null;
+    const t0 = performance.now();
     let result;
     try {
       result = await runTurn({
@@ -927,17 +933,20 @@ import { retrieve } from './memory/retrieve.js';
       return null;
     }
 
+    const ms = performance.now() - t0;
+    if (result && result.usage) billTurn(result.usage, ms);
+
     if (opts.holdForJudge && result.duel) {
       // 突破：先把判定结果交给玩家确认，再揭示正文
-      showJudge(result.duel, () => paintTurn(bubble, wrap, result));
+      showJudge(result.duel, () => paintTurn(bubble, wrap, result, ms));
       return result;
     }
-    paintTurn(bubble, wrap, result);
+    paintTurn(bubble, wrap, result, ms);
     return result;
   }
 
-  /** 把一回合的结果画进叙事流。 */
-  function paintTurn(bubble, wrap, result) {
+  /** 把一回合的结果画进叙事流。ms 是本回合耗时（含裁决）。 */
+  function paintTurn(bubble, wrap, result, ms) {
     bubble.classList.remove('typing');
     bubble.textContent = result.narrative;
 
@@ -950,6 +959,17 @@ import { retrieve } from './memory/retrieve.js';
     }
     if (result.encounter) {
       wrap.insertAdjacentHTML('beforeend', `<div class="fx"><span class="fx-chip">偶遇 · ${esc(result.encounter.name)}</span></div>`);
+    }
+    // 每回合账单：只在本回合真调了模型时显示（离线降级回合没有成本，报 0.0s 反而是噪音）；
+    // 渠道给了 usage 才报 token，否则只报耗时——知情，但不编数字
+    if (result.source === 'llm') {
+      const bill = formatBill({ usage: result.usage || null, ms });
+      if (bill) wrap.insertAdjacentHTML('beforeend', `<div class="bill">${esc(bill)}</div>`);
+    }
+    // 器灵台词：突破无论成败都低语一句（卡里现成的氛围资产，纯引擎随机）
+    if (result.kind === 'breakthrough' && result.duel) {
+      const line = spiritLine();
+      if (line) setTimeout(() => whisper(line), 600);
     }
     // 数值飘字：同样由 events（真实落地增量）驱动
     for (const ev of fxEvents) {
@@ -1140,8 +1160,10 @@ import { retrieve } from './memory/retrieve.js';
         <div class="tl-b"><div class="tl-w">${esc(where || '——')}</div>
           <div class="tl-t">${esc(text.slice(0, 90))}${text.length > 90 ? '…' : ''}</div></div></div>`;
     }).join('');
+    const tlSpirit = spiritLine();
     $('#judge-box').innerHTML = `<h3>仙 途 回 望</h3>
       <div class="cr-hint" style="text-align:left">共 ${turns.length} 条记录${rows.length > 200 ? `（只列最近 200 回合，共 ${rows.length} 回合）` : ''}</div>
+      ${tlSpirit ? `<div class="tl-spirit">☯ ${esc(tlSpirit)}</div>` : ''}
       <div class="tl-list">${html || '<div class="cr-hint">尚无记录。</div>'}</div>
       <button class="btn primary" id="tl-ok" style="margin-top:14px">关 闭</button>`;
     $('#judge').classList.add('open');
@@ -1271,6 +1293,47 @@ import { retrieve } from './memory/retrieve.js';
     setTimeout(() => d.remove(), 1400);
   }
 
+  /** 器灵低语：一句氛围台词，顶部浮现后淡出（区别于数值飘字，不抢操作焦点）。 */
+  let whisperEl = null;
+  function whisper(text) {
+    if (!text) return;
+    if (whisperEl) whisperEl.remove();
+    whisperEl = document.createElement('div');
+    whisperEl.className = 'whisper';
+    whisperEl.textContent = `☯ ${text}`;
+    document.body.appendChild(whisperEl);
+    requestAnimationFrame(() => { if (whisperEl) whisperEl.classList.add('show'); });
+    setTimeout(() => {
+      if (!whisperEl) return;
+      whisperEl.classList.remove('show');
+      setTimeout(() => { if (whisperEl) { whisperEl.remove(); whisperEl = null; } }, 700);
+    }, 3600);
+  }
+  let lastSpirit = '';
+  function spiritLine() {
+    const line = pickSpiritLine(state['$器灵台词'] || [], { avoid: lastSpirit });
+    if (line) lastSpirit = line;
+    return line;
+  }
+
+  /** 闲置低语：整个会话只出现一次（别变成骚扰）；只在游戏页且非回合中。 */
+  let spiritIdleShown = false;
+  let spiritIdleTimer = null;
+  function scheduleSpiritIdle() {
+    clearTimeout(spiritIdleTimer);
+    if (spiritIdleShown) return;
+    spiritIdleTimer = setTimeout(() => {
+      if (spiritIdleShown) return;
+      const active = document.querySelector('.screen.active');
+      if (!active || active.id !== 's-game' || turnInFlight) { scheduleSpiritIdle(); return; }
+      spiritIdleShown = true;              // 有台词没台词都只试这一次
+      const line = spiritLine();
+      if (line) whisper(line);
+    }, 120000);
+  }
+  ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, () => scheduleSpiritIdle(), { passive: true }));
+  scheduleSpiritIdle();
+
   /* ================= 判定演出 ================= */
   /** 覆盖层待确认的回调：Esc 关闭时必须补跑，否则该回合白跑。 */
   let judgeAck = null;
@@ -1384,6 +1447,25 @@ import { retrieve } from './memory/retrieve.js';
     if (s.status !== 'newer') { el.innerHTML = ''; return; }
     el.innerHTML = `<div class="chip gold upd-chip" id="upd-chip">发现新版本 ${esc(s.latestTag)} · 查看</div>`;
     $('#upd-chip').addEventListener('click', () => { showScreen('s-game'); openPanel('设置'); });
+  }
+
+  /* ================= 每回合账单（渠道给了 usage 就记，跨会话累计） ================= */
+  const USAGE_KEY = 'dy.usage';
+  let USAGE = (() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(USAGE_KEY) || 'null');
+      return v && v.total ? v : emptyUsage();
+    } catch { return emptyUsage(); }
+  })();
+  function persistUsage() {
+    try { localStorage.setItem(USAGE_KEY, JSON.stringify(compactUsage(USAGE))); } catch { /* 配额满就算了 */ }
+  }
+  /** 记一笔并落盘；saveId 传 '' 表示不归到某个档（比如向导测连）。 */
+  function billTurn(usage, ms, saveId) {
+    if (!usage) return USAGE;
+    USAGE = recordUsage(USAGE, { usage, ms, saveId: saveId === undefined ? currentSaveId : saveId });
+    persistUsage();
+    return USAGE;
   }
 
   /* ================= 大模型接入（能力由壳提供，浏览器内降级） ================= */
@@ -1745,6 +1827,11 @@ import { retrieve } from './memory/retrieve.js';
       ci.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(ci.value); });
       $('#chat-send').addEventListener('click', () => sendChat(ci.value));
     }
+    // 设置面板：清空用量 / 重跑首启向导
+    const uc = $('#usage-clear');
+    if (uc) uc.addEventListener('click', () => { USAGE = emptyUsage(); persistUsage(); renderSidebar(true); toast('用量记录已清空'); });
+    const rw = $('#run-wizard');
+    if (rw) rw.addEventListener('click', () => showWizard());
     // 图鉴搜索
     const ws = $('#wiki-search');
     if (ws) ws.addEventListener('input', () => { $('#wiki-list').innerHTML = wikiList(ws.value.trim()); });
@@ -2129,6 +2216,37 @@ import { retrieve } from './memory/retrieve.js';
     }
   });
 
+  /* ---------- 安卓返回键：MainActivity 把 back 转发给 window.__dyBack() ----------
+   * 层次与 Esc 完全一致（弹层→抽屉→全屏页），最后"再按一次退出"交给系统。
+   * 返回 true = 已消费；返回 false = 放行给系统退出。 */
+  let lastBackAt = 0;
+  function dismissTopLayer() {
+    if (typeof LIB !== 'undefined' && LIB.open) { closeFateLibrary(); return true; }
+    if ($('#picker') && $('#picker').classList.contains('open')) { closeModelPicker(); return true; }
+    if ($('#judge') && $('#judge').classList.contains('open')) {
+      // 与 Esc 相同：判定层必须走"承认结果"，否则叙事与存档缺这一回合
+      if (typeof judgeAck === 'function') judgeAck();
+      else $('#judge').classList.remove('open');
+      return true;
+    }
+    if ($('#sidebar') && $('#sidebar').classList.contains('open')) { closePanel(); return true; }
+    if ($('#more-sheet') && $('#more-sheet').classList.contains('open')) { closeMoreSheet(); return true; }
+    const scr = document.querySelector('.screen.active');
+    if (scr && scr.id === 's-create') { showScreen('s-boot'); return true; }
+    if (scr && scr.id === 's-wizard') { wizardBack(); return true; }
+    return false;
+  }
+  window.__dyBack = function () {
+    try {
+      if (dismissTopLayer()) return true;
+      const now = Date.now();
+      if (now - lastBackAt < 2200) return false;     // 两次连按：放行给系统退出
+      lastBackAt = now;
+      toast('再按一次返回键退出《道渊》');
+      return true;
+    } catch { return false; }
+  };
+
   /* ---------- 手势：抽屉内下滑关闭 ---------- */
   (function bindSwipeClose() {
     const head = document.querySelector('#sidebar .sb-head');
@@ -2466,6 +2584,7 @@ import { retrieve } from './memory/retrieve.js';
     if (id === '设置') {
       const nm = (LLM.settings && LLM.settings.narrator && LLM.settings.narrator.model) || '';
       const am = (LLM.settings && LLM.settings.arbiter && LLM.settings.arbiter.model) || '';
+      const u = usageSummary(USAGE);
       return `<div class="set-row"><div class="lbl">内容尺度 · 与原作角色卡完全一致<div class="d">默认开启，不提供内容开关、不做内容删改</div></div><span class="chip ok">已启用</span></div>
         <div class="card" style="margin:12px 0">
           <div class="kv"><span class="k">叙事模型</span><span class="v">${esc(nm || '未配置')}${nm && !LLM.ready ? ' · 未就绪（见「模型」页）' : ''}</span></div>
@@ -2477,6 +2596,17 @@ import { retrieve } from './memory/retrieve.js';
             ${['s', 'm', 'l'].map((f) => `<button class="tab ${currentFont === f ? 'on' : ''}" data-font="${f}">${({ s: '小', m: '中', l: '大' })[f]}</button>`).join('')}
           </div></div>
         <div class="set-row"><div class="lbl">神视模式<div class="d">显示精确数值而非模糊语（只影响显示）</div></div><div class="switch ${showExact ? 'on' : ''}" data-set="神视模式"></div></div>
+        <div class="sect-title">用 量</div>
+        <div class="card">
+          <div class="kv"><span class="k">累计</span><span class="v">${u.calls} 次 · ${u.tokens} · 平均 ${u.avgSec}</span></div>
+          <div class="kv"><span class="k">今日</span><span class="v">${u.today}</span></div>
+          <div class="kv"><span class="k">提示词缓存命中</span><span class="v">${u.cached}</span></div>
+          <div class="kv"><span class="k">口径</span><span class="v">渠道返回 usage 才计入；含叙事回合与玉简传讯</span></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn" id="usage-clear" style="flex:1">清空用量记录</button>
+          <button class="btn" id="run-wizard" style="flex:1">重跑配置向导</button>
+        </div>
         ${updateSectionHTML()}
         <div class="sect-title">安 卓 适 配</div>
         <div class="card"><div class="kv"><span class="k">当前版式</span><span class="v">${isTablet() ? '平板（左导航 + 中叙事 + 右状态）' : '手机（单栏 + 抽屉）'}</span></div>
@@ -2541,22 +2671,235 @@ import { retrieve } from './memory/retrieve.js';
         ${w.keys.length ? `<div style="margin-top:8px">${w.keys.slice(0, 8).map((k) => `<span class="chip" style="margin:2px 4px 0 0">#${esc(k)}</span>`).join('')}</div>` : ''}
       </div>`).join('');
   }
-  function sendChat(text) {
-    const v = (text || '').trim(); if (!v) return;
+  /**
+   * 玉简传讯：真发一次模型调用，流式回信。
+   * 失败必须**明说**（原文放回输入框），绝不拿写死的台词冒充回信——
+   * 这里曾用三条固定台词假装 AI 回复，发第二条就穿帮。
+   */
+  let chatBusy = false;
+  async function sendChat(text) {
+    const v = (text || '').trim();
+    if (!v || chatBusy) return;
     const first = Object.entries(state.玉简)[0];
     if (!first) return; // 玉简无联系人（空数据守卫：此前直接解构 undefined 会崩）
     const [nm, c] = first;
     c.历史记录 = c.历史记录 || {};
-    const id = Object.keys(c.历史记录).length + 1;
-    c.历史记录[id] = { 发送者: '我', 时间: '此刻', 内容: v };
-    const reply = pick([
-      '「你倒是敢问。」——她顿了顿，「后山的事，别一个人去。」',
-      '「灵石先记账上。」语气听着不耐烦，回信却来得很快。',
-      '「……嗯。你自己小心。」',
-    ]);
-    c.历史记录[id + 1] = { 发送者: nm, 时间: '片刻后', 内容: reply };
-    renderSidebar();
-    const log = $('#chat-log'); if (log) log.scrollTop = log.scrollHeight;
+    const llm = window.DYApp.available() && LLM.ready ? window.DYApp.llm : null;
+    if (!llm) { toast('未接入大模型，玉简传不出去——先在「模型」面板配置。'); return; }
+
+    chatBusy = true;
+    const input = $('#chat-input-field');
+    if (input) input.value = '';
+    const log = $('#chat-log');
+    // 乐观渲染：玩家这条立刻可见，回信占一条"传讯中"
+    const mine = document.createElement('div');
+    mine.className = 'line me';
+    mine.innerHTML = `<div class="t">此刻</div><div class="b">${esc(v)}</div>`;
+    const pending = document.createElement('div');
+    pending.className = 'line';
+    pending.innerHTML = `<div class="t">片刻后</div><div class="b msg typing">传讯中……</div>`;
+    if (log) { log.append(mine, pending); log.scrollTop = log.scrollHeight; }
+
+    const t0 = performance.now();
+    try {
+      const messages = buildContactMessages({
+        name: nm,
+        info: { 性别: c.性别, 境界: c.境界, 关系: c.关系, 好感度: c.好感度 },
+        history: Object.values(c.历史记录),
+        text: v,
+      });
+      const streamed = await streamNarrative(llm, messages, null, { sampling: { maxTokens: 160 } });
+      const ms = performance.now() - t0;
+      if (!streamed.ok) throw new Error(streamed.error || '模型没有回信');
+      billTurn(streamed.usage || null, ms);
+      const id = Object.keys(c.历史记录).length + 1;
+      c.历史记录[id] = { 发送者: '我', 时间: '此刻', 内容: v };
+      c.历史记录[id + 1] = { 发送者: nm, 时间: '片刻后', 内容: streamed.text.trim() };
+      renderSidebar(true);
+      const l2 = $('#chat-log'); if (l2) l2.scrollTop = l2.scrollHeight;
+    } catch (e) {
+      mine.remove(); pending.remove();
+      if (input) { input.value = v; try { input.focus(); } catch { /* 页面不在前台就算了 */ } }
+      toast(`传讯未达：${(e && e.message) || e}（原文已放回输入框）`);
+    } finally {
+      chatBusy = false;
+    }
+  }
+
+  /* ================= 首启向导 ================= */
+  const WIZ_PROVIDERS = [
+    { id: 'opencodego', name: 'opencodego', d: '中转渠道（会话头自动补）', base: 'https://opencode.ai/zen/go/v1', headers: 'x-opencode-session: uuid', free: false },
+    { id: 'openai', name: 'OpenAI', d: '官方接口', base: 'https://api.openai.com/v1', headers: '', free: false },
+    { id: 'ollama', name: 'Ollama（本地）', d: '本机推理，免 Key', base: 'http://127.0.0.1:11434/v1', headers: '', free: true },
+    { id: 'custom', name: '自定义', d: '任何 OpenAI 兼容渠道', base: '', headers: '', free: false },
+  ];
+  const WIZ = { step: 0, prov: WIZ_PROVIDERS[0], base: WIZ_PROVIDERS[0].base, path: '/chat/completions', key: '', model: '', models: [], loading: false, testing: false, ok: false, msg: '' };
+
+  function showWizard() {
+    WIZ.step = 0; WIZ.msg = ''; WIZ.ok = false;
+    renderWizard();
+    showScreen('s-wizard');
+  }
+  function finishWizard() {
+    try { localStorage.setItem('dy.wizard.done', '1'); } catch { /* 无妨 */ }
+    showScreen('s-boot');
+    renderUpdateChip();
+  }
+  function wizardBack() {
+    if (WIZ.step > 0) { WIZ.step--; WIZ.msg = ''; renderWizard(); }
+    else finishWizard();
+  }
+
+  function renderWizard() {
+    const root = $('#wiz-body');
+    if (!root) return;
+    const stepHead = `<div class="wiz-steps">${['① 渠道', '② 地址与 Key', '③ 模型与测连'].map((t, i) =>
+      `<span class="${WIZ.step === i ? 'on' : ''}">${t}</span>`).join('<i>›</i>')}</div>`;
+    let body = '';
+    if (WIZ.step === 0) {
+      body = `<div class="wiz-cards">${WIZ_PROVIDERS.map((p) => `
+        <button class="wcard ${WIZ.prov.id === p.id ? 'on' : ''}" data-wprov="${p.id}">
+          <b>${esc(p.name)}</b><span>${esc(p.d)}</span></button>`).join('')}</div>`;
+    } else if (WIZ.step === 1) {
+      body = `<div class="card" style="text-align:left">
+          <div class="kv"><span class="k">渠道</span><span class="v">${esc(WIZ.prov.name)}</span></div>
+          <div class="lbl" style="margin-top:10px">接口地址（一般以 /v1 结尾）</div>
+          <input id="wiz-base" class="inp" value="${esc(WIZ.base)}" placeholder="https://…/v1" autocomplete="off">
+          <div class="lbl" style="margin-top:10px">对话路径</div>
+          <input id="wiz-path" class="inp" value="${esc(WIZ.path)}" placeholder="/chat/completions" autocomplete="off">
+          ${WIZ.prov.free ? '' : `<div class="lbl" style="margin-top:10px">API Key（只存本机，加密保存）</div>
+          <input id="wiz-key" class="inp" type="password" value="${esc(WIZ.key)}" placeholder="sk-…" autocomplete="off">`}
+        </div>`;
+    } else {
+      const chips = WIZ.models.slice(0, 30).map((m) =>
+        `<button class="tab ${WIZ.model === m ? 'on' : ''}" data-wmodel="${esc(m)}">${esc(m)}</button>`).join('');
+      body = `<div class="card" style="text-align:left">
+          <div class="lbl">模型名（叙事用）</div>
+          <input id="wiz-model" class="inp" value="${esc(WIZ.model)}" placeholder="如 deepseek-chat" autocomplete="off">
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button class="btn" id="wiz-fetch" style="flex:1">${WIZ.loading ? '拉取中……' : '拉取模型列表'}</button>
+            <button class="btn primary" id="wiz-test" style="flex:1" ${WIZ.testing ? 'disabled' : ''}>${WIZ.testing ? '测连中……' : '测连（真发一条）'}</button>
+          </div>
+          ${chips ? `<div class="wiz-chips">${chips}</div>` : ''}
+          <div class="cr-hint">「测连」会真的发一条 1-token 对话——拉到模型列表不代表能对话，中转渠道常按路由分开鉴权。</div>
+          ${WIZ.msg ? `<div class="wiz-msg ${WIZ.ok ? 'ok' : 'bad'}">${esc(WIZ.msg)}</div>` : ''}
+        </div>`;
+    }
+    root.innerHTML = `${stepHead}${body}
+      <div class="wiz-foot">
+        <button class="btn" id="wiz-skip">跳过，先逛逛</button>
+        ${WIZ.step > 0 ? '<button class="btn" id="wiz-prev">上一步</button>' : ''}
+        ${WIZ.step < 2
+          ? '<button class="btn primary" id="wiz-next">下一步</button>'
+          : (WIZ.ok
+            ? '<button class="btn primary" id="wiz-done">完成，去开局</button>'
+            : '')}
+      </div>`;
+
+    $$('#wiz-body [data-wprov]').forEach((b) => b.addEventListener('click', () => {
+      WIZ.prov = WIZ_PROVIDERS.find((p) => p.id === b.dataset.wprov) || WIZ_PROVIDERS[0];
+      WIZ.base = WIZ.prov.base; WIZ.key = '';
+      renderWizard();
+    }));
+    $$('#wiz-body [data-wmodel]').forEach((b) => b.addEventListener('click', () => {
+      WIZ.model = b.dataset.wmodel;
+      renderWizard();
+    }));
+    const bind = (id, key, prop) => {
+      const el = $(id);
+      if (el) el.addEventListener('input', () => { WIZ[key] = el[prop]; });
+    };
+    bind('#wiz-base', 'base', 'value');
+    bind('#wiz-path', 'path', 'value');
+    bind('#wiz-key', 'key', 'value');
+    const mi = $('#wiz-model');
+    if (mi) mi.addEventListener('input', () => { WIZ.model = mi.value; });
+    const wf = $('#wiz-fetch');
+    if (wf) wf.addEventListener('click', wizardFetchModels);
+    const wt = $('#wiz-test');
+    if (wt) wt.addEventListener('click', wizardTest);
+    const skip = $('#wiz-skip');
+    if (skip) skip.addEventListener('click', finishWizard);
+    const prev = $('#wiz-prev');
+    if (prev) prev.addEventListener('click', wizardBack);
+    const next = $('#wiz-next');
+    if (next) next.addEventListener('click', () => {
+      if (WIZ.step === 1) {
+        WIZ.base = (($('#wiz-base') || {}).value || '').trim();
+        WIZ.path = (($('#wiz-path') || {}).value || '').trim() || '/chat/completions';
+        WIZ.key = (($('#wiz-key') || {}).value || '').trim();
+        if (!WIZ.base) { WIZ.msg = '接口地址还没填。'; WIZ.step = 1; renderWizard(); return; }
+        if (!WIZ.prov.free && !WIZ.key && !(LLM.secrets && LLM.secrets.llmKeySet)) { WIZ.msg = '这一步需要 API Key（本地推理渠道请回上一步选 Ollama）。'; renderWizard(); return; }
+      }
+      WIZ.step = Math.min(2, WIZ.step + 1);
+      WIZ.msg = '';
+      renderWizard();
+      if (WIZ.step === 2 && !WIZ.models.length && !WIZ.loading) wizardFetchModels();
+    });
+    const done = $('#wiz-done');
+    if (done) done.addEventListener('click', finishWizard);
+  }
+
+  /** 把向导里的配置写进壳；失败原样抛给调用方展示。 */
+  async function wizardSave() {
+    await window.DYApp.llm.set({
+      provider: {
+        id: WIZ.prov.id, name: WIZ.prov.name,
+        baseUrl: WIZ.base.trim(), endpointPath: WIZ.path || '/chat/completions',
+        systemRole: 'system', supportsStream: true,
+        requiresApiKey: !WIZ.prov.free,
+        defaultHeaders: textToHeaders(WIZ.prov.headers),
+      },
+      narrator: { model: WIZ.model.trim(), temperature: 0.85, topP: 0.95, maxTokens: null, extraBody: {} },
+      arbiter: null,
+      timeoutSecs: 600,
+    });
+    if (WIZ.key.trim()) await window.DYApp.llm.setKey(WIZ.key.trim());
+    await refreshLlm();
+  }
+
+  async function wizardFetchModels() {
+    if (WIZ.loading) return;
+    WIZ.loading = true; WIZ.msg = '';
+    renderWizard();
+    try {
+      await wizardSave();
+      WIZ.models = (await window.DYApp.llm.models()) || [];
+      WIZ.msg = WIZ.models.length ? `拿到 ${WIZ.models.length} 个模型，点一个填入。` : '没拿到模型列表——直接手输模型名也一样。';
+    } catch (e) {
+      WIZ.models = [];
+      const cls = classifyConnError(e);
+      WIZ.msg = `${cls.title}：${cls.hint}`;
+    }
+    WIZ.loading = false;
+    renderWizard();
+  }
+
+  async function wizardTest() {
+    if (WIZ.testing) return;
+    const model = (($('#wiz-model') || {}).value || WIZ.model || '').trim();
+    WIZ.model = model;
+    if (!model) { WIZ.msg = '先选择或填写模型名。'; renderWizard(); return; }
+    WIZ.testing = true; WIZ.ok = false; WIZ.msg = '正在测连（真发一条对话）……';
+    renderWizard();
+    const t0 = performance.now();
+    try {
+      await wizardSave();
+      const llm = window.DYApp.available() && LLM.ready ? window.DYApp.llm : null;
+      if (!llm) throw new Error('API Key（在向导第②步填写）');
+      const r = await streamNarrative(llm, [{ role: 'user', content: '测连' }], null, { sampling: { maxTokens: 1 } });
+      const ms = performance.now() - t0;
+      if (!r.ok) throw new Error(r.error || '未知错误');
+      billTurn(r.usage || null, ms, '');
+      WIZ.ok = true;
+      WIZ.msg = `连通了（首字 ${(ms / 1000).toFixed(1)}s）。配置已保存——点「完成」去开局。`;
+    } catch (e) {
+      const cls = classifyConnError(e);
+      WIZ.ok = false;
+      WIZ.msg = `${cls.title}：${cls.hint}`;
+    }
+    WIZ.testing = false;
+    renderWizard();
   }
 
   /* ================= 启动 ================= */
@@ -2602,9 +2945,16 @@ import { retrieve } from './memory/retrieve.js';
   if (typeof window.__dyMarkBootOk === 'function') window.__dyMarkBootOk();
 
   // 壳能力探测：在 Tauri 里读本地模型配置与同步配置；浏览器里保持降级
-  refreshLlm().then(() => {
+  refreshLlm().then(async () => {
     renderUpdateChip();  // 版本行按"是否已连接大模型"动态更新
     if (curPanel === '模型' || curPanel === '设置') renderSidebar();
+    // 首启向导：壳在、还没配好、本地也没有档 → 三步带着配完（可跳过，之后可重跑）
+    let wizDone = false;
+    try { wizDone = localStorage.getItem('dy.wizard.done') === '1'; } catch { wizDone = true; }
+    if (!wizDone && LLM.shell && !LLM.ready) {
+      await refreshSaves();
+      if (!SAVE.list.length) showWizard();
+    }
   });
   refreshSync().then(() => loadSyncLists());
 

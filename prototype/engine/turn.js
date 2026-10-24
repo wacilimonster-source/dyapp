@@ -251,6 +251,8 @@ export async function runTurn(input) {
   return {
     narrative,
     kind: action?.kind || 'free',
+    // 本回合叙事调用的用量（渠道给了才有）：界面用它出"账单行"并累计
+    usage: streamed.usage || null,
     effects: merged,
     applied: { applied: applied.applied, skipped: applied.skipped },
     events: applied.events,

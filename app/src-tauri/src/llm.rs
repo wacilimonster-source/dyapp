@@ -402,7 +402,7 @@ async fn chat_fetch(
     json_mode: bool,
     timeout_secs: u64,
     mut on_delta: Option<&mut (dyn FnMut(&str) + Send)>,
-) -> AppResult<String> {
+) -> AppResult<ChatOutput> {
     let body = build_body(slot, messages, true, json_mode);
     let http = client(timeout_secs)?;
     let resp = http
@@ -421,6 +421,7 @@ async fn chat_fetch(
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut full = String::new();
+    let mut usage: Option<Value> = None;
 
     // `[DONE]` 后必须立刻停止读取：部分网关不会主动断开连接，
     // 原先用 continue 会一直挂到超时（默认 600s），用户看完全文却迟迟等不到收尾。
@@ -464,8 +465,8 @@ async fn chat_fetch(
                     cb(&text);
                 }
             }
-            if let Some(u) = value.get("usage").filter(|u| !u.is_null()) {
-                let _ = u; // usage 目前只透传给 UI 的成本估算，尚未落库
+            if let Some(u) = extract_usage(&value) {
+                usage = Some(u); // 累计口径以最后一次为准（OpenAI 兼容端在末帧给出全量）
             }
         }
         if done {
@@ -487,12 +488,15 @@ async fn chat_fetch(
                             cb(&text);
                         }
                     }
+                    if let Some(u) = extract_usage(&value) {
+                        usage = Some(u);
+                    }
                 }
             }
         }
     }
 
-    Ok(full)
+    Ok(ChatOutput { text: full, usage })
 }
 
 /// 流式叙事：边收边把增量推给界面。
@@ -538,8 +542,12 @@ pub async fn chat_stream(
     .await;
 
     match result {
-        Ok(text) => {
-            emit(&app, &channel, "done", json!({ "text": text }));
+        Ok(out) => {
+            // usage 在 done 之前发：前端把 done 当"回合结束"，账单要在结束前到手
+            if let Some(u) = out.usage {
+                emit(&app, &channel, "usage", u);
+            }
+            emit(&app, &channel, "done", json!({ "text": out.text }));
             Ok(())
         }
         Err(e) => {
@@ -568,7 +576,7 @@ pub async fn complete_json(
         ));
     }
 
-    let text = chat_fetch(
+    let out = chat_fetch(
         &provider,
         &slot,
         &key,
@@ -578,6 +586,7 @@ pub async fn complete_json(
         None,
     )
     .await?;
+    let text = out.text;
 
     // 有些端点会把 JSON 包在 ```json 围栏里，这里做一次容错剥离
     let cleaned = strip_code_fence(&text);
@@ -588,6 +597,38 @@ pub async fn complete_json(
             cleaned.chars().take(200).collect::<String>()
         ))
     })
+}
+
+/// chat_fetch 的产物：正文 + 该次调用的用量（渠道给了才有）。
+#[derive(Debug, Default)]
+struct ChatOutput {
+    text: String,
+    usage: Option<Value>,
+}
+
+/// 从 SSE 帧里取 usage 并规范化成前端好用的 camelCase。
+///
+/// OpenAI 兼容端通常在最后一帧给全量 `{prompt_tokens, completion_tokens,
+/// total_tokens, prompt_tokens_details:{cached_tokens}}`；字段缺失时置 null，
+/// 四个字段全空则返回 None（视为"这渠道不给用量"）。
+fn extract_usage(value: &Value) -> Option<Value> {
+    let u = value.get("usage").filter(|u| !u.is_null())?;
+    let num = |k: &str| u.get(k).and_then(|v| v.as_u64());
+    let prompt = num("prompt_tokens");
+    let completion = num("completion_tokens");
+    let total = num("total_tokens");
+    let cached = u
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(|v| v.as_u64());
+    if prompt.is_none() && completion.is_none() && total.is_none() && cached.is_none() {
+        return None;
+    }
+    Some(json!({
+        "promptTokens": prompt,
+        "completionTokens": completion,
+        "totalTokens": total,
+        "cachedTokens": cached,
+    }))
 }
 
 /// 取增量正文（OpenAI 兼容：choices[0].delta.content）。
@@ -741,6 +782,37 @@ pub async fn llm_complete_json(
 mod unit_tests {
     use super::*;
 
+    #[test]
+    fn usage_抽取_标准形状() {
+        let v: Value = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":1000,"completion_tokens":320,"total_tokens":1320,
+                "prompt_tokens_details":{"cached_tokens":400}}}"#,
+        )
+        .unwrap();
+        let u = extract_usage(&v).expect("应抽出 usage");
+        assert_eq!(u["promptTokens"], 1000);
+        assert_eq!(u["completionTokens"], 320);
+        assert_eq!(u["totalTokens"], 1320);
+        assert_eq!(u["cachedTokens"], 400);
+    }
+
+    #[test]
+    fn usage_抽取_缺字段置空_全空返回_none() {
+        let only_total: Value = serde_json::from_str(r#"{"usage":{"total_tokens":7}}"#).unwrap();
+        let u = extract_usage(&only_total).expect("只有 total 也算给了用量");
+        assert_eq!(u["promptTokens"], Value::Null);
+        assert_eq!(u["cachedTokens"], Value::Null);
+        assert_eq!(u["totalTokens"], 7);
+
+        let empty: Value = serde_json::from_str(r#"{"usage":{}}"#).unwrap();
+        assert!(
+            extract_usage(&empty).is_none(),
+            "四个字段全空 = 渠道不给用量"
+        );
+        let none: Value = serde_json::from_str(r#"{"choices":[]}"#).unwrap();
+        assert!(extract_usage(&none).is_none());
+    }
+
     fn slot_with(extra: Vec<(&str, Value)>) -> ModelSlot {
         let mut s = ModelSlot {
             model: "m".into(),
@@ -852,9 +924,10 @@ mod live_tests {
 
         let mut chunks = 0usize;
         let mut cb = |_t: &str| chunks += 1;
-        let text = chat_fetch(&provider, &slot, &key, &msgs, false, 120, Some(&mut cb))
+        let out = chat_fetch(&provider, &slot, &key, &msgs, false, 120, Some(&mut cb))
             .await
             .expect("真实渠道调用失败");
+        let text = out.text;
 
         assert!(!text.trim().is_empty(), "返回内容为空");
         assert!(chunks > 0, "没有收到任何流式增量（说明走的不是流式路径）");
@@ -890,9 +963,10 @@ mod live_tests {
             },
         ];
 
-        let text = chat_fetch(&provider, &slot, &key, &msgs, true, 120, None)
+        let out = chat_fetch(&provider, &slot, &key, &msgs, true, 120, None)
             .await
             .expect("真实渠道调用失败");
+        let text = out.text;
         let cleaned = strip_code_fence(&text);
         let v: Value = serde_json::from_str(&cleaned).expect("流式累积的文本不是合法 JSON");
         assert_eq!(v.get("n").and_then(|x| x.as_i64()), Some(3));
