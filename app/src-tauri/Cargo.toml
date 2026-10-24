@@ -1,6 +1,6 @@
 [package]
 name = "dyapp"
-version = "0.7.0"
+version = "0.8.0"
 description = "道渊 · 独立版（安卓手机/平板 + Windows）"
 authors = ["玖神"]
 edition = "2021"
