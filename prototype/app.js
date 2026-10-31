@@ -155,21 +155,16 @@ import { retrieve } from './memory/retrieve.js';
     { id: '模型', icon: '🔌' }, { id: '同步', icon: '☁' }, { id: '设置', icon: '⚙' },
   ];
   let curPanel = '主角';
-  /** 面板分组：常用的直接可见，其余收进「更多」——手机抽屉里 14 个 tab 横滑很难发现 */
-  const PANELS_COMMON = ['主角', '道侣', '人物', '机遇', '背包'];
-  /** 底部主行动：每回合真会点的 4 个；其余进「更多」 */
+  /** 面板分组：常用的直接可见，其余收进「其他」。
+   *  面板入口只有右上角 ☰ 这一个（底部不再有第二套「更多」），所以高频的背包 / 地图 / 玉简放在常用里。 */
+  const PANELS_COMMON = ['主角', '背包', '地图', '玉简', '人物', '机遇'];
+  /** 底部只放每回合真会点的行动，不放面板入口 */
   const MAIN_ACTS = [
     { k: '探索', i: '🧭', hot: true },
     { k: '修炼', i: '🧘', hot: true },
     { k: '突破', i: '⚡', hot: true },
     { k: '斗法', i: '⚔', hot: true },
     { k: '交流', i: '💬' },
-  ];
-  const MORE_ACTS = [
-    { k: '玉简', i: '📱', panel: '玉简' }, { k: '地图', i: '🗺', panel: '地图' },
-    { k: '背包', i: '🎒', panel: '背包' }, { k: '人物', i: '👤', panel: '人物' },
-    { k: '机遇', i: '📜', panel: '机遇' }, { k: '绝色榜', i: '🏮', panel: '绝色榜' },
-    { k: '灵宠', i: '🐾', panel: '灵宠' }, { k: '面板', i: '☰' },
   ];
   let forced = null;       // null | 'phone' | 'tablet'
   const isTablet = () => app.dataset.layout === 'tablet';
@@ -252,12 +247,19 @@ import { retrieve } from './memory/retrieve.js';
     $$('.screen').forEach((s) => s.classList.toggle('active', s.id === id));
     if (id === 's-game') { renderHUD(); renderActions(); renderSidebar(); }
   }
+  /** 游戏中回主菜单：存档先落盘；回合进行中不让走（否则半截回合会在看不见的页面里落定）。 */
+  function goHome() {
+    if (turnInFlight) { toast('这一回合还在演算，稍等片刻再回主菜单。'); return; }
+    flushPendingSave();
+    closePanel();
+    showScreen('s-boot');
+  }
   document.addEventListener('click', (e) => {
     const go = e.target.closest('[data-go]');
     if (!go) return;
     const dest = go.dataset.go;
     if (dest === 'create') { startCreate(); }
-    else if (dest === 'game') { showScreen('s-game'); scrollStream(); }
+    else if (dest === 'game') { showScreen('s-game'); scrollToLastReply(); }
     else if (dest === 'panels') { showScreen('s-game'); openPanel(go.dataset.panel || '主角'); }
   });
   $('#btn-about').addEventListener('click', () => alert(
@@ -342,12 +344,54 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   /** 图 + 文字兜底：匹不到立绘（男配、灵宠）或图床挂了就显示首字。 */
-  function portraitHTML(name, cls) {
+  function portraitHTML(name, cls, zoom = true) {
     const fb = `<span class="pf">${esc(String(name || '？').trim().slice(0, 1))}</span>`;
     const url = portraitURL(name);
-    if (!url) return `<div class="${cls} pbad">${fb}</div>`;
-    return `<div class="${cls}"><img src="${esc(url)}" alt="${esc(name)}" data-portrait="1" loading="lazy" decoding="async">${fb}</div>`;
+    const z = zoom ? ` data-zoom="${esc(name)}"` : '';
+    if (!url) return `<div class="${cls} pbad"${z}>${fb}</div>`;
+    return `<div class="${cls}"${z}><img src="${esc(url)}" alt="${esc(name)}" data-portrait="1" loading="lazy" decoding="async">${fb}</div>`;
   }
+
+  /* ---------- 立绘放大层：点卡片 / 头像 → 完整立绘（不裁切）+ 全部字段 ---------- */
+  /** 排名可能是「第九」「9」「第九位」，统一成「第 X 位」，避免拼出「第 第九 位」。 */
+  function rankText(r) {
+    const s = String(r == null ? '' : r).trim();
+    if (!s || s === '未知') return '未知';
+    if (s.startsWith('第')) return s.endsWith('位') ? s : s + ' 位';
+    return `第 ${s} 位`;
+  }
+  /** 按人名在榜 / 道侣 / 人物里找到资料，列成「字段 → 内容」。 */
+  function profileRows(name) {
+    const kv = (pairs) => pairs.filter(([, v]) => v != null && String(v).trim() !== '' && v !== '——');
+    const b = state.绝色榜 && state.绝色榜[name];
+    if (b) return kv([['排名', rankText(b.排名)], ['头衔', b.头衔], ['仙姿', b.仙姿], ['群芳谱', b.群芳谱]]);
+    const c = state.道侣 && state.道侣[name];
+    if (c) return kv([['境界', c.境界], ['性别 · 种族', [c.性别, c.种族].filter(Boolean).join(' · ')], ['状态', c.状态],
+      ['亲密', c.亲密], ['性格', c.性格], ['外观', [c.外观, c.身高].filter(Boolean).join(' · ')], ['背景', c.背景], ['神通', c.神通], ['心声', c.心声]]);
+    const p = state.人物 && state.人物[name];
+    if (p) return kv([['头衔', p.头衔], ['境界', p.境界], ['关系', p.关系阶段], ['好感', p.好感], ['性格', p.性格], ['描述', p.描述]]);
+    return [];
+  }
+  function openLightbox(name) {
+    const rows = profileRows(name);
+    $('#lb-box').innerHTML = `
+      <div class="lb-h"><span class="t">${esc(name)}</span><button class="x" id="lb-x" type="button">×</button></div>
+      <div class="lb-body">
+        ${portraitHTML(name, 'lb-pic', false)}
+        <div class="lb-hint">点图片放大 / 还原</div>
+        ${rows.map(([k, v]) => `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('')}
+      </div>`;
+    $('#lightbox').classList.add('open');
+    $('#lb-x').addEventListener('click', closeLightbox);
+    const pic = $('#lb-box .lb-pic');
+    if (pic) pic.addEventListener('click', () => pic.classList.toggle('zoomed'));
+  }
+  function closeLightbox() { $('#lightbox').classList.remove('open'); }
+  $('#lightbox').addEventListener('click', (e) => { if (e.target.id === 'lightbox') closeLightbox(); });
+  document.addEventListener('click', (e) => {
+    const z = e.target.closest('[data-zoom]');
+    if (z) openLightbox(z.dataset.zoom);
+  });
 
   /**
    * 图床挂掉时返回的是它自己的 404 占位图（1200×800 的 SVG），浏览器按"加载成功"处理，
@@ -657,7 +701,7 @@ import { retrieve } from './memory/retrieve.js';
       // 注意：这里的 id 不能叫 cr-back —— 头部已有同名按钮，$('#cr-back') 永远选中第一个，
       // 该按钮会变成死键，且每次渲染都会给头部返回键叠加一个新监听器。
       $('#cr-edit').addEventListener('click', () => { createState.step = 0; renderCreate(); });
-      $('#cr-start').addEventListener('click', () => { applyCreate(); showScreen('s-game'); scrollStream(); });
+      $('#cr-start').addEventListener('click', () => { applyCreate(); showScreen('s-game'); scrollToLastReply(); });
     }
 
     // 通用：选项按钮
@@ -702,7 +746,7 @@ import { retrieve } from './memory/retrieve.js';
     streamWindow = STREAM_WINDOW;
 
     setSuggestions([]);            // 新档开局不继承上一局的建议
-    showScreen('s-game'); renderStream(); renderHUD(); renderSidebar();
+    showScreen('s-game'); renderStream(); scrollToLastReply(); renderHUD(); renderSidebar();
     autosave();
   }
   $('#cr-back').addEventListener('click', () => {
@@ -741,6 +785,7 @@ import { retrieve } from './memory/retrieve.js';
         <span class="realm">${esc(P.境界)}</span>
         <span class="spacer"></span>
         <button class="iconbtn rail-toggle" id="rail-toggle" title="收起/展开左栏">⇤</button>
+        <button class="iconbtn" id="hud-home" title="回主菜单" aria-label="回主菜单">⌂</button>
         <button class="iconbtn" id="hud-menu" title="面板">☰</button>
       </div>
       <div class="hud-row2">
@@ -755,6 +800,7 @@ import { retrieve } from './memory/retrieve.js';
         ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '修为' && P.修为 >= 100 ? '瓶颈' : r.key === '道心' ? daoStage(P.道心) : '')).join('')}
       </div>`;
     $('#hud-menu').addEventListener('click', () => openPanel(curPanel));
+    $('#hud-home').addEventListener('click', goHome);
     // 聚合条 = 六维的折叠开关
     const agg = $('#hud-agg');
     if (agg) agg.addEventListener('click', () => {
@@ -814,11 +860,60 @@ import { retrieve } from './memory/retrieve.js';
     // 重渲整条叙事流时按最后一轮的建议同步吸附条，避免与屏幕内容对不上
     const last = [...turns].reverse().find((t) => t.role === 'assistant' && (t.choices || []).length);
     setSuggestions(last ? last.choices : []);
+    updateToLatest();
   }
-  function scrollStream() { const s = $('#stream'); s.scrollTop = s.scrollHeight; }
+  /* ---------- 叙事流滚动 ----------
+   * 旧做法：每个流式片段都把视图拽到最底，长回复一边出字一边把开头顶出屏幕，来不及看。
+   * 现在：发出行动后只跟随到「你那句话」的顶部为止——回复短时跟到底，回复长到装不下时
+   * 视图停住，从头读起；读到下面的内容用「回到最新」按钮。用户一旦自己滚动就不再跟随。 */
+  let followAnchor = null;
+  const NEAR_BOTTOM_PX = 160;
+
+  function offsetIn(scroller, el) {
+    return el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+  }
+  /** 离底部较远时才显示「回到最新」。 */
+  function updateToLatest() {
+    const s = $('#stream'), b = $('#to-latest');
+    if (!s || !b) return;
+    b.classList.toggle('show', s.scrollHeight - s.scrollTop - s.clientHeight > NEAR_BOTTOM_PX);
+  }
+  /** 流式输出 / 回合落定时调用：只往下追，且不越过锚点（用户那句话）的顶部。 */
+  function followStream() {
+    const s = $('#stream');
+    if (followAnchor && followAnchor.isConnected) {
+      const max = s.scrollHeight - s.clientHeight;
+      const target = Math.min(max, offsetIn(s, followAnchor) - 8);
+      if (target > s.scrollTop) s.scrollTop = target;
+    }
+    updateToLatest();
+  }
+  /** 进入游戏 / 载入存档：停在最近一条回复的开头，而不是它的末尾。 */
+  function scrollToLastReply() {
+    followAnchor = null;
+    const s = $('#stream');
+    const last = [...s.querySelectorAll('.msg.assistant')].pop();
+    s.scrollTop = last ? Math.max(0, offsetIn(s, last) - 8) : s.scrollHeight;
+    updateToLatest();
+  }
+  (function bindStreamScroll() {
+    const s = $('#stream'), b = $('#to-latest');
+    s.addEventListener('scroll', updateToLatest, { passive: true });
+    // 用户亲自动手滚：立刻放弃跟随（程序改 scrollTop 不会触发这些事件）
+    for (const ev of ['wheel', 'touchstart', 'pointerdown']) {
+      s.addEventListener(ev, () => { followAnchor = null; }, { passive: true });
+    }
+    b.addEventListener('click', () => {
+      followAnchor = null;
+      s.scrollTo({ top: s.scrollHeight, behavior: 'smooth' });
+    });
+  })();
+
   function appendTurn(t) {
-    $('#stream').insertAdjacentHTML('beforeend', msgHTML(t));
-    scrollStream();
+    const s = $('#stream');
+    s.insertAdjacentHTML('beforeend', msgHTML(t));
+    if (t.role === 'user') followAnchor = s.lastElementChild;
+    followStream();
   }
 
   /* ================= 行动区 ================= */
@@ -842,38 +937,22 @@ import { retrieve } from './memory/retrieve.js';
       <div class="sugg" id="sugg"></div>
       <div class="row-main">
         ${MAIN_ACTS.map((a) => `<button class="act ${a.hot ? 'hot' : ''}" data-act="${a.k}"><span class="i">${a.i}</span>${a.k}</button>`).join('')}
-        <button class="act" id="more-btn" title="更多入口"><span class="i">⋯</span><span class="more-l">更多</span></button>
       </div>
-      <div class="input-row"><input id="free-input" placeholder="写下你的行动……"><button class="send" id="send">发送</button></div>
-      <div class="more-sheet" id="more-sheet">
-        <div class="grid">${MORE_ACTS.map((a) => `<button class="act" data-act="${a.k}" ${a.panel ? `data-panel="${a.panel}"` : ''}><span class="i">${a.i}</span>${a.k}</button>`).join('')}</div>
-      </div>`;
+      <div class="input-row"><input id="free-input" placeholder="写下你的行动……"><button class="send" id="send">发送</button></div>`;
     $('#send').addEventListener('click', sendFree);
     $('#free-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFree(); });
-    $('#more-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      $('#more-sheet').classList.toggle('open');
-    });
     renderSuggestions();
     updateBreakthroughHint();
   }
 
-  /** 点别处或选中入口后收起「更多」。 */
-  function closeMoreSheet() {
-    const m = $('#more-sheet');
-    if (m) m.classList.remove('open');
-  }
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]');
-    if (a) { doAction(a.dataset.act, a.dataset.panel); return; }
+    if (a) { doAction(a.dataset.act); return; }
     const c = e.target.closest('[data-choice]');
     if (c) { freeText(c.dataset.choice); }
   });
-  function doAction(kind, panel) {
-    closeMoreSheet();
-    if (panel) { openPanel(panel); return; }
+  function doAction(kind) {
     if (kind === '突破') { breakthrough(); return; }
-    if (kind === '面板') { openPanel(curPanel); return; }
     if (kind === '探索') return freeText('四处探索，看看这附近有什么。');
     if (kind === '修炼') return cultivate();
     if (kind === '斗法') return duel();
@@ -917,7 +996,7 @@ import { retrieve } from './memory/retrieve.js';
         recent: turns.slice(-8).map((t) => ({ role: t.role, text: t.text })),
         recap: currentRecap(),
         arbiterConfigured: !!(LLM.settings && LLM.settings.arbiter && LLM.settings.arbiter.model),
-        onDelta: (_chunk, full) => { bubble.textContent = full; scrollStream(); },
+        onDelta: (_chunk, full) => { bubble.textContent = full; followStream(); },
         fallbackNarratives: REPLIES.map((r) => r.text),
         chat: {
           mode: CHAT.mode,
@@ -996,7 +1075,7 @@ import { retrieve } from './memory/retrieve.js';
     for (const a of unlocked) toast(`🏆 达成成就 · ${a.name}（${a.desc}）`);
     if (unlocked.length && curPanel === '成就') renderSidebar();
 
-    scrollStream();
+    followStream();
     renderHUD();
     if (!['设置', '模型', '同步', '存档', '成就'].includes(curPanel)) renderSidebar();
     autosave();
@@ -1095,7 +1174,7 @@ import { retrieve } from './memory/retrieve.js';
       if (WORLDBOOK) WORLD_INDEX = buildIndex(WORLDBOOK, { realm: state.主角.所在界 });
       streamWindow = STREAM_WINDOW;
       setSuggestions([]);          // 换档后不能留着上一局的建议（会误导操作）
-      renderStream(); renderHUD(); renderSidebar();
+      renderStream(); scrollToLastReply(); renderHUD(); renderSidebar();
       SAVE.log = `已读取 ${id}`;
     } catch (e) {
       SAVE.log = '读档失败：' + ((e && e.message) || e);
@@ -1386,14 +1465,12 @@ import { retrieve } from './memory/retrieve.js';
   const UPD = {
     os() {
       const ua = navigator.userAgent || '';
-      if (/android/i.test(ua)) return 'android';
-      if (/windows|win32|win64/i.test(ua)) return 'windows';
-      return 'other';
+      return /android/i.test(ua) ? 'android' : 'other';
     },
-    /** 本次要装的附件（没有则只能退回发布页） */
+    /** 本次要装的附件（安卓 APK；没有则只能退回发布页） */
     target() {
       const a = (window.DYUpdate.state && window.DYUpdate.state.asset) || {};
-      return this.os() === 'android' ? a.apk : this.os() === 'windows' ? a.win : null;
+      return this.os() === 'android' ? a.apk : null;
     },
   };
 
@@ -1415,7 +1492,7 @@ import { retrieve } from './memory/retrieve.js';
       // 否则（浏览器预览 / 只有别的平台产物）退回链接。WebView 里 target=_blank 不响应，
       // 所以浏览器预览才给链接，壳内没有可装附件时给的是"发布页"。
       const primary = t && inShell
-        ? `<button class="btn primary" id="upd-install" style="flex:1">${UPD.os() === 'android' ? '下载并安装 APK' : '下载并运行安装包'}</button>`
+        ? `<button class="btn primary" id="upd-install" style="flex:1">下载并安装 APK</button>`
         : `<a class="btn primary" href="${esc(t ? t.browser_download_url : s.url)}" target="_blank" rel="noopener">${t ? '在浏览器中下载 ' + esc(t.name) : '前往发布页'}</a>`;
       tail = `<div class="card" style="margin-top:10px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -1814,9 +1891,9 @@ import { retrieve } from './memory/retrieve.js';
     const chip = (p) => `<button class="tab ${p.id === curPanel ? 'on' : ''}" data-tab="${p.id}">${p.icon} ${p.id}</button>`;
     $('#sb-tabs').innerHTML =
       `<span class="g-label">常用</span>${common.map(chip).join('')}` +
-      `<button class="tab more" data-moretabs="1">${moreTabsOpen ? '收起 ▴' : '＋ 更多 ▾'}</button>` +
+      `<button class="tab more" data-moretabs="1">${moreTabsOpen ? '收起 ▴' : '＋ 其他 ▾'}</button>` +
       `<span class="grp-more" style="display:${moreTabsOpen ? 'contents' : 'none'}">` +
-        `<span class="g-label">更多</span>${more.map(chip).join('')}</span>`;
+        `<span class="g-label">其他</span>${more.map(chip).join('')}</span>`;
     $('#sb-body').innerHTML = panelHTML(curPanel);
     $$('#sb-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
     const mt = $('#sb-tabs [data-moretabs]');
@@ -1877,7 +1954,7 @@ import { retrieve } from './memory/retrieve.js';
       sbDirty = true; // 下载期间不许背景刷新重建这一块，否则进度与按钮状态会丢
       try {
         const r = await window.DYApp.update.download(
-          { url: t.browser_download_url, requestId: 'upd' + Date.now() },
+          { url: t.browser_download_url, requestId: 'upd' + Date.now(), sha256: t.digest || null },
           (ev) => {
             if (ev && ev.type === 'progress') {
               const d = ev.data || {};
@@ -1885,11 +1962,9 @@ import { retrieve } from './memory/retrieve.js';
             }
           },
         );
-        say(`下载完成（${mb(r.size || 0)} MB），正在交给系统安装器……`);
+        say(`下载完成（${mb(r.size || 0)} MB，${r.verified ? '已通过 SHA-256 校验' : '未校验'}，来源 ${r.via || '未知'}），正在交给系统安装器……`);
         await window.DYApp.update.install(r.path);
-        say(UPD.os() === 'android'
-          ? '安装器已打开。若系统提示"禁止安装未知应用"，在刚弹出的页面里允许一次即可。'
-          : '安装包已启动。装完重新打开就是新版本，现在可以先关掉本程序。');
+        say('安装器已打开。若系统提示"禁止安装未知应用"，在刚弹出的页面里允许一次即可。');
         ui.textContent = '重新下载并安装';
       } catch (e) {
         say('失败：' + ((e && e.message) || e) + '（也可以点「全部版本」到发布页手动下载）');
@@ -2153,13 +2228,12 @@ import { retrieve } from './memory/retrieve.js';
       <div class="rail-mid">${main.map(btn).join('')}</div>
       <div class="rail-foot">${foot.join('')}<button class="rbtn" id="rail-home"><span class="i">⎋</span>主菜单</button></div>`;
     $$('#rail [data-tab]').forEach((b) => b.addEventListener('click', () => openPanel(b.dataset.tab)));
-    $('#rail-home').addEventListener('click', () => showScreen('s-boot'));
+    $('#rail-home').addEventListener('click', goHome);
   }
   function openPanel(name, { reset = false } = {}) {
-    closeMoreSheet();   // 切面板时收起「更多」，否则弹层会悬在行动区上方
     const switching = name !== curPanel || reset;
     curPanel = name;
-    // 目标面板收在「更多」组里：先展开，否则 tab 条上看不见当前页在哪
+    // 目标面板收在「其他」组里：先展开，否则 tab 条上看不见当前页在哪
     if (!PANELS_COMMON.includes(name)) moreTabsOpen = true;
     // 平板上打开面板时，把收起的右栏自动展开——不然点了图标什么也不发生
     if (app.dataset.layout === 'tablet' && $('#sidebar') && $('#sidebar').classList.contains('mini')) {
@@ -2178,14 +2252,10 @@ import { retrieve } from './memory/retrieve.js';
   const sc = $('#side-collapse');
   if (sc) sc.addEventListener('click', () => toggleSide());
 
-  // 点空白处收起「更多」弹层
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('#more-sheet') && !e.target.closest('#more-btn')) closeMoreSheet();
-  });
-
   /* ---------- 键盘（平板带键盘 / 桌面） ---------- */
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if ($('#lightbox').classList.contains('open')) { closeLightbox(); return; }
       if (LIB.open) { closeFateLibrary(); return; }
       if ($('#picker').classList.contains('open')) { closeModelPicker(); return; }
       if ($('#judge').classList.contains('open')) {
@@ -2195,7 +2265,6 @@ import { retrieve } from './memory/retrieve.js';
         return;
       }
       if ($('#sidebar').classList.contains('open')) { closePanel(); return; }
-      closeMoreSheet();
       return;
     }
     // 1–4 选行动建议（判定/预览覆盖层打开时不响应，否则会"隔着遮罩"发起新回合）
@@ -2209,7 +2278,6 @@ import { retrieve } from './memory/retrieve.js';
     }
     // Alt+←/→ 循环面板
     if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-      closeMoreSheet();
       const i = PANELS.findIndex((p) => p.id === curPanel);
       const next = PANELS[(i + (e.key === 'ArrowRight' ? 1 : PANELS.length - 1) + PANELS.length) % PANELS.length];
       if (next) { e.preventDefault(); openPanel(next.id); }
@@ -2221,6 +2289,7 @@ import { retrieve } from './memory/retrieve.js';
    * 返回 true = 已消费；返回 false = 放行给系统退出。 */
   let lastBackAt = 0;
   function dismissTopLayer() {
+    if ($('#lightbox') && $('#lightbox').classList.contains('open')) { closeLightbox(); return true; }
     if (typeof LIB !== 'undefined' && LIB.open) { closeFateLibrary(); return true; }
     if ($('#picker') && $('#picker').classList.contains('open')) { closeModelPicker(); return true; }
     if ($('#judge') && $('#judge').classList.contains('open')) {
@@ -2230,9 +2299,10 @@ import { retrieve } from './memory/retrieve.js';
       return true;
     }
     if ($('#sidebar') && $('#sidebar').classList.contains('open')) { closePanel(); return true; }
-    if ($('#more-sheet') && $('#more-sheet').classList.contains('open')) { closeMoreSheet(); return true; }
     const scr = document.querySelector('.screen.active');
     if (scr && scr.id === 's-create') { showScreen('s-boot'); return true; }
+    // 游戏主界面没有可收的层了：返回键回主菜单（再在主菜单按两次才退出）
+    if (scr && scr.id === 's-game') { goHome(); return true; }
     if (scr && scr.id === 's-wizard') { wizardBack(); return true; }
     return false;
   }
@@ -2392,8 +2462,8 @@ import { retrieve } from './memory/retrieve.js';
     if (id === '绝色榜') {
       return `<div class="cr-hint">仙子排行榜 · 遇到即解锁。红颜为虚名，仙途方为真。<br>立绘热链卡内作者的图床，链接失效时自动退回名字首字。</div>
         <div class="grid-cards">${Object.entries(state.绝色榜).map(([k, b]) => `
-          <div class="bcard ${b.解锁 ? '' : 'lock'}">${b.解锁 ? portraitHTML(k, 'bpic') : '<div class="bpic pbad"><span class="pf">？</span></div>'}
-            <div class="rk">第 ${esc(b.排名)} 位</div>
+          <div class="bcard ${b.解锁 ? '' : 'lock'}" ${b.解锁 ? `data-zoom="${esc(k)}"` : ''}>${b.解锁 ? portraitHTML(k, 'bpic', false) : '<div class="bpic pbad"><span class="pf">？</span></div>'}
+            <div class="rk">${esc(rankText(b.排名))}</div>
             <div class="nm">${esc(b.解锁 ? k : '？ ？ ？')}</div>
             <div class="tt">${esc(b.头衔)}</div>
             <div class="pz">${esc(b.仙姿)}</div>
@@ -2903,7 +2973,7 @@ import { retrieve } from './memory/retrieve.js';
   }
 
   /* ================= 启动 ================= */
-  renderStream(); renderHUD(); renderActions(); renderSidebar();
+  renderStream(); scrollToLastReply(); renderHUD(); renderActions(); renderSidebar();
   showScreen('s-boot');
   renderUpdateChip();
 

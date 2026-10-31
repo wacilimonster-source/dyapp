@@ -55,7 +55,10 @@
         <!-- mid-inner：平板下把中栏内容限宽居中（中文长文 30–38 字/行最舒服），手机下无影响 -->
         <div class="mid-inner">
           <header class="hud" id="hud"></header>
-          <div class="stream" id="stream"></div>
+          <div class="stream-wrap">
+            <div class="stream" id="stream"></div>
+            <button class="to-latest" id="to-latest" type="button">↓ 回到最新</button>
+          </div>
           <footer class="actions" id="actions"></footer>
         </div>
       </div>
@@ -86,6 +89,11 @@
     <!-- ========== 判定演出 ========== -->
     <div class="overlay" id="judge">
       <div class="judge" id="judge-box"></div>
+    </div>
+
+    <!-- ========== 立绘放大层（绝色榜 / 道侣 / 人物共用） ========== -->
+    <div class="overlay" id="lightbox">
+      <div class="lb" id="lb-box"></div>
     </div>
 
     <!-- ========== 通用弹层（模型选择用） ========== -->

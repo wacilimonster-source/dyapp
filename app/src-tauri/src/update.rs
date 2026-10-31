@@ -4,7 +4,8 @@
 //! 用户点「下载 APK」只会停在发布页。
 //!
 //! 边界（这条链路下载完会**直接执行**，所以不能把 URL 当自由参数）：
-//! - 只允许 https + GitHub 的下载域名，重定向之后还要再查一次域名；
+//! - 请求里的地址只允许 https + GitHub 的下载域名，直连时重定向之后还要再查一次域名；
+//! - 国内镜像（`MIRRORS`）只在请求带了 SHA-256 时启用，下完比对哈希，对不上就丢弃；
 //! - 文件名只取 URL 最后一段并剥掉所有路径字符，扩展名必须在白名单里；
 //! - 安装前要求文件确实落在本应用的暂存目录内（防被指到任意路径去执行）。
 
@@ -28,7 +29,17 @@ const ALLOWED_HOSTS: [&str; 4] = [
 ];
 
 /// 允许被下载并执行的扩展名。
-const ALLOWED_EXT: [&str; 2] = ["apk", "exe"];
+const ALLOWED_EXT: [&str; 1] = ["apk"];
+
+/// GitHub 在国内常连不上，下载优先走这些转发镜像（前缀 + 原始 GitHub 地址）。
+/// 2026-11 实测可用；镜像会变，列表放在代码里而不是由前端传入，
+/// 免得页面被注入后把"下载并执行"指向任意域名。
+const MIRRORS: [&str; 2] = ["https://ghfast.top/", "https://gh-proxy.com/"];
+
+/// 建立连接的上限：直连 GitHub 被墙时 TCP 不会拒绝而是悬着，必须快速放弃去试下一个来源。
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// 连上之后两次收到数据之间的最长空档。
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 const UA: &str = "dyapp-updater";
 
@@ -39,6 +50,9 @@ pub struct DownloadRequest {
     /// 进度事件通道后缀；前端用同一个 requestId `listen('api://'+id)`。
     #[serde(default)]
     pub request_id: String,
+    /// Release 附件的 SHA-256（`sha256:…` 或纯十六进制）。给了才会启用镜像并校验。
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 fn host_allowed(host: &str) -> bool {
@@ -88,8 +102,7 @@ fn safe_filename(url: &reqwest::Url) -> AppResult<String> {
         .to_ascii_lowercase();
     if !ALLOWED_EXT.contains(&ext.as_str()) {
         return Err(AppError::Data(format!(
-            "只允许安装 {}，这个地址指向的是 .{ext}",
-            ALLOWED_EXT.join(" / ")
+            "只允许安装 .apk，这个地址指向的是 .{ext}"
         )));
     }
     Ok(clean)
@@ -123,46 +136,75 @@ fn emit_progress(app: &AppHandle, request_id: &str, received: u64, total: Option
     );
 }
 
-#[tauri::command]
-pub async fn update_download(app: AppHandle, req: DownloadRequest) -> AppResult<Value> {
-    let url = check_url(&req.url)?;
-    let name = safe_filename(&url)?;
-    let dir = staging_dir(&app)?;
-    let path = dir.join(&name);
-    // 同名残骸先删掉：否则上次断在半路的文件会被当成"已经下好了"
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
+/// 把 `sha256:abcd…` / `ABCD…` 规整成 64 位小写十六进制；格式不对返回 None。
+fn normalize_sha256(raw: &str) -> Option<String> {
+    let s = raw
+        .trim()
+        .trim_start_matches("sha256:")
+        .to_ascii_lowercase();
+    (s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())).then_some(s)
+}
 
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .build()
-        .map_err(|e| AppError::Http(e.to_string()))?;
-    let resp = client.get(url.clone()).send().await?;
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 候选下载来源，按尝试顺序排列：`(显示名, 实际地址, 是否经第三方镜像)`。
+///
+/// 镜像只是个转发的第三方，能改文件内容，所以**只有请求带了 SHA-256 才启用**，
+/// 下完逐字节比对哈希，对不上就丢弃。没有哈希时只走 GitHub 直连。
+fn candidates(url: &reqwest::Url, has_hash: bool) -> Vec<(String, String, bool)> {
+    let mut out = Vec::new();
+    if has_hash {
+        for m in MIRRORS {
+            let host = m.trim_start_matches("https://").trim_end_matches('/');
+            out.push((host.to_string(), format!("{m}{url}"), true));
+        }
+    }
+    out.push(("github.com".to_string(), url.to_string(), false));
+    out
+}
+
+/// 从一个来源下完整个文件，返回（字节数, SHA-256）。失败时调用方负责清理半截文件。
+async fn download_once(
+    app: &AppHandle,
+    request_id: &str,
+    client: &reqwest::Client,
+    src_url: &str,
+    via_mirror: bool,
+    path: &Path,
+) -> AppResult<(u64, String)> {
+    use sha2::{Digest, Sha256};
+
+    let resp = client.get(src_url).send().await?;
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(api_error(status.as_u16(), &body));
     }
-    // 重定向之后仍然要在 GitHub 域名内，否则等于把"下载并执行"交给第三方
-    let final_host = resp.url().host_str().unwrap_or("").to_string();
-    if !host_allowed(&final_host) {
-        return Err(AppError::Data(format!(
-            "下载被重定向到站外域名：{final_host}"
-        )));
+    // 直连时重定向之后仍然要在 GitHub 域名内；镜像的内容真伪由 SHA-256 兜底
+    if !via_mirror {
+        let final_host = resp.url().host_str().unwrap_or("").to_string();
+        if !host_allowed(&final_host) {
+            return Err(AppError::Data(format!(
+                "下载被重定向到站外域名：{final_host}"
+            )));
+        }
     }
 
     let total = resp.content_length();
-    let mut file = std::fs::File::create(&path)?;
+    let mut file = std::fs::File::create(path)?;
+    let mut hasher = Sha256::new();
     let mut received: u64 = 0;
     let mut last_emit = std::time::Instant::now();
     let mut resp = resp;
     while let Some(chunk) = resp.chunk().await? {
         file.write_all(&chunk)?;
+        hasher.update(&chunk);
         received += chunk.len() as u64;
         if last_emit.elapsed().as_millis() >= 200 {
             last_emit = std::time::Instant::now();
-            emit_progress(&app, &req.request_id, received, total);
+            emit_progress(app, request_id, received, total);
         }
     }
     file.flush()?;
@@ -170,18 +212,70 @@ pub async fn update_download(app: AppHandle, req: DownloadRequest) -> AppResult<
 
     if let Some(expect) = total {
         if expect != received {
-            let _ = std::fs::remove_file(&path);
             return Err(AppError::Io(format!(
                 "下载不完整：期望 {expect} 字节，实到 {received} 字节"
             )));
         }
     }
-    emit_progress(&app, &req.request_id, received, total);
-    Ok(json!({
-        "path": path.to_string_lossy(),
-        "name": name,
-        "size": received,
-    }))
+    emit_progress(app, request_id, received, total);
+    Ok((received, hex(&hasher.finalize())))
+}
+
+#[tauri::command]
+pub async fn update_download(app: AppHandle, req: DownloadRequest) -> AppResult<Value> {
+    let url = check_url(&req.url)?;
+    let name = safe_filename(&url)?;
+    let expect_hash =
+        match req.sha256.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(raw) => Some(normalize_sha256(raw).ok_or_else(|| {
+                AppError::Data("校验值格式不对，应为 64 位十六进制 SHA-256".into())
+            })?),
+            None => None,
+        };
+    let dir = staging_dir(&app)?;
+    let path = dir.join(&name);
+
+    // connect_timeout 管"连不上"，read_timeout 管"连上后卡住不动"：
+    // 两者都是单次等待上限，不限制总时长，慢网下大文件仍能下完。
+    let client = reqwest::Client::builder()
+        .user_agent(UA)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(STALL_TIMEOUT)
+        .build()
+        .map_err(|e| AppError::Http(e.to_string()))?;
+
+    let mut failures: Vec<String> = Vec::new();
+    for (label, src, via_mirror) in candidates(&url, expect_hash.is_some()) {
+        // 同名残骸先删掉：否则上次断在半路的文件会被当成"已经下好了"
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        let outcome = download_once(&app, &req.request_id, &client, &src, via_mirror, &path).await;
+        let reason = match outcome {
+            Ok((size, got)) => match &expect_hash {
+                Some(want) if *want != got => {
+                    "文件校验失败（内容与官方不一致，已丢弃）".to_string()
+                }
+                _ => {
+                    return Ok(json!({
+                        "path": path.to_string_lossy(),
+                        "name": name,
+                        "size": size,
+                        "sha256": got,
+                        "verified": expect_hash.is_some(),
+                        "via": label,
+                    }));
+                }
+            },
+            Err(e) => e.to_string(),
+        };
+        let _ = std::fs::remove_file(&path);
+        failures.push(format!("{label}：{reason}"));
+    }
+    Err(AppError::Http(format!(
+        "所有下载来源都失败了 —— {}",
+        failures.join("；")
+    )))
 }
 
 #[tauri::command]
@@ -194,7 +288,7 @@ pub fn update_install(app: AppHandle, path: String) -> AppResult<Value> {
         .unwrap_or("")
         .to_ascii_lowercase();
     if !ALLOWED_EXT.contains(&ext.as_str()) {
-        return Err(AppError::Data("只允许安装 .apk / .exe".into()));
+        return Err(AppError::Data("只允许安装 .apk".into()));
     }
     // 只装自己刚下下来的那个文件：路径必须落在暂存目录内
     let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
@@ -208,20 +302,12 @@ pub fn update_install(app: AppHandle, path: String) -> AppResult<Value> {
     Ok(json!({ "path": canon.to_string_lossy() }))
 }
 
-#[cfg(target_os = "windows")]
-fn install(path: &Path) -> AppResult<()> {
-    std::process::Command::new(path)
-        .spawn()
-        .map_err(|e| AppError::Io(format!("启动安装包失败：{e}")))?;
-    Ok(())
-}
-
 #[cfg(target_os = "android")]
 fn install(path: &Path) -> AppResult<()> {
     android::launch_installer(path)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 fn install(_path: &Path) -> AppResult<()> {
     Err(AppError::Other(
         "这个平台不支持应用内安装，请手动运行下载好的文件".into(),
@@ -417,27 +503,25 @@ mod tests {
     #[test]
     fn 文件名只取最后一段且扩展名要在白名单() {
         let u = reqwest::Url::parse(
-            "https://github.com/o/r/releases/download/v1/dyapp-1.0.0-windows-x64-setup.exe",
-        )
-        .unwrap();
-        assert_eq!(
-            safe_filename(&u).unwrap(),
-            "dyapp-1.0.0-windows-x64-setup.exe"
-        );
-
-        let u = reqwest::Url::parse(
             "https://github.com/o/r/releases/download/v1/dyapp-1.0.0-universal.apk",
         )
         .unwrap();
         assert_eq!(safe_filename(&u).unwrap(), "dyapp-1.0.0-universal.apk");
 
+        // .exe 随 Windows 端下线，不再放行
+        let u = reqwest::Url::parse(
+            "https://github.com/o/r/releases/download/v1/dyapp-1.0.0-windows-x64-setup.exe",
+        )
+        .unwrap();
+        assert!(safe_filename(&u).is_err(), ".exe 不在白名单");
+
         // 转义出来的分隔符不会还原成路径：只会被换成下划线
         let u =
-            reqwest::Url::parse("https://github.com/o/r/releases/download/v1/..%2F..%2Fevil.exe")
+            reqwest::Url::parse("https://github.com/o/r/releases/download/v1/..%2F..%2Fevil.apk")
                 .unwrap();
         let n = safe_filename(&u).unwrap();
         assert!(!n.contains('/') && !n.contains('\\'), "不能有分隔符：{n}");
-        assert!(n.ends_with(".exe"));
+        assert!(n.ends_with(".apk"));
 
         let u = reqwest::Url::parse("https://github.com/o/r/releases/download/v1/tool.sh").unwrap();
         assert!(safe_filename(&u).is_err(), ".sh 不在白名单");
@@ -447,12 +531,42 @@ mod tests {
     }
 
     #[test]
+    fn sha256_接受带前缀与大写_拒绝格式不对() {
+        let h = "35251c68117e56e08d134a00ecb7a699a704fd3fe02cf0a35a2307cb32f3a548";
+        assert_eq!(normalize_sha256(h).as_deref(), Some(h));
+        assert_eq!(normalize_sha256(&format!("sha256:{h}")).as_deref(), Some(h));
+        assert_eq!(normalize_sha256(&h.to_uppercase()).as_deref(), Some(h));
+        assert!(normalize_sha256("abc").is_none(), "太短");
+        assert!(normalize_sha256(&"z".repeat(64)).is_none(), "非十六进制");
+        assert!(normalize_sha256("").is_none());
+    }
+
+    #[test]
+    fn 有哈希才启用镜像_且镜像在前直连兜底() {
+        let u = reqwest::Url::parse("https://github.com/o/r/releases/download/v1/x.apk").unwrap();
+
+        let with = candidates(&u, true);
+        assert_eq!(with.len(), MIRRORS.len() + 1);
+        assert!(with[..MIRRORS.len()].iter().all(|c| c.2), "镜像排前面");
+        assert_eq!(
+            with[0].1,
+            "https://ghfast.top/https://github.com/o/r/releases/download/v1/x.apk"
+        );
+        let last = with.last().unwrap();
+        assert!(!last.2 && last.1 == u.as_str(), "最后是直连");
+
+        let without = candidates(&u, false);
+        assert_eq!(without.len(), 1, "没有哈希不能走第三方镜像");
+        assert!(!without[0].2);
+    }
+
+    #[test]
     fn 文件名里的路径与控制字符被剥掉() {
-        let u = reqwest::Url::parse("https://github.com/o/r/releases/download/v1/%2e%2e%2fwin.exe")
+        let u = reqwest::Url::parse("https://github.com/o/r/releases/download/v1/%2e%2e%2fwin.apk")
             .unwrap();
         let n = safe_filename(&u).unwrap();
         assert!(!n.contains('/') && !n.contains('\\'), "不能有分隔符：{n}");
         assert!(!n.starts_with('.'), "不能以点开头（会被当隐藏文件）：{n}");
-        assert!(n.ends_with(".exe"));
+        assert!(n.ends_with(".apk"));
     }
 }

@@ -11,8 +11,11 @@ window.DYUpdate = (function () {
 
   const REPO = 'wacilimonster-source/dyapp';
   const API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
+  /* 直连 api.github.com 失败（国内常见）时依次回退的转发前缀。
+   * 镜像返回的 digest 只用来校验下载，镜像本身的可信度低于直连，所以直连永远排第一。 */
+  const API_FALLBACKS = ['https://gh-proxy.com/'];
   const PAGE = 'https://github.com/' + REPO + '/releases';
-  const VERSION = '0.8.0';                 // 当前版本，发版时同步 VERSION 文件
+  const VERSION = '0.9.0';                 // 当前版本，发版时同步 VERSION 文件
   const LS_AUTO = 'dy.update.auto';
   const TIMEOUT_MS = 8000;
 
@@ -23,8 +26,8 @@ window.DYUpdate = (function () {
     notes: '',
     url: PAGE,
     apk: '',
-    /** 本次要装的附件：{ apk: {name,url,size}|null, win: {...}|null } */
-    asset: { apk: null, win: null },
+    /** 本次要装的附件：{ apk: {name,url,size}|null } */
+    asset: { apk: null },
     error: null,
     checkedAt: 0,
   };
@@ -55,15 +58,33 @@ window.DYUpdate = (function () {
     state.status = 'checking';
     state.error = null;
     inflight = (async function () {
-      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-      const timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, TIMEOUT_MS);
+      /** 单个地址的一次请求；网络层失败（超时/断网）抛错，HTTP 状态交给调用方判断 */
+      async function fetchOne(url) {
+        const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, TIMEOUT_MS);
+        try {
+          return await fetch(url, {
+            headers: { Accept: 'application/vnd.github+json' },
+            signal: ctrl ? ctrl.signal : undefined,
+            cache: 'no-store',
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       try {
-        const res = await fetch(API, {
-          headers: { Accept: 'application/vnd.github+json' },
-          signal: ctrl ? ctrl.signal : undefined,
-          cache: 'no-store',
-        });
-        clearTimeout(timer);
+        let res = null, lastErr = null;
+        const urls = [API].concat(API_FALLBACKS.map(function (p) { return p + API; }));
+        for (const u of urls) {
+          try {
+            const r = await fetchOne(u);
+            // 5xx / 429 视为这条路不通，换下一个；其余状态（含 403 限流、404）按原样处理
+            if (r.status >= 500 || r.status === 429) { lastErr = new Error('HTTP ' + r.status); continue; }
+            res = r;
+            break;
+          } catch (e) { lastErr = e; }
+        }
+        if (!res) throw lastErr || new Error('网络不可用');
         if (res.status === 404) { state.status = 'none'; state.checkedAt = Date.now(); return state; }
         if (res.status === 403) throw new Error('请求过于频繁（GitHub 限流），稍后再试');
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -81,12 +102,10 @@ window.DYUpdate = (function () {
           }) || null;
         };
         const apk = pick(/\.apk$/i, /unsigned/i);
-        const win = pick(/windows.*\.exe$/i, null) || pick(/\.exe$/i, null);
-        state.asset = { apk: apk, win: win };
+        state.asset = { apk: apk };
         state.apk = apk ? apk.browser_download_url : '';
         state.status = cmp(tag, VERSION) > 0 ? 'newer' : 'latest';
       } catch (err) {
-        clearTimeout(timer);
         state.status = 'error';
         state.error = err && err.name === 'AbortError' ? '请求超时'
           : (err && err.message) || '网络不可用';

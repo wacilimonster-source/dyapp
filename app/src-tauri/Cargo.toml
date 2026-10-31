@@ -1,7 +1,7 @@
 [package]
 name = "dyapp"
-version = "0.8.0"
-description = "道渊 · 独立版（安卓手机/平板 + Windows）"
+version = "0.9.0"
+description = "道渊 · 独立版（安卓手机/平板）"
 authors = ["玖神"]
 edition = "2021"
 rust-version = "1.77"
@@ -45,14 +45,6 @@ hmac = "0.12"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
-
-# Windows 上用 DPAPI 保护密钥材料（绑定当前用户登录凭据）
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_Security_Cryptography",
-  "Win32_System_Memory",
-] }
 
 # tokio 只被 #[tokio::test] 用到（库代码本身不直接依赖它），
 # 放到 dev-dependencies 就不会进产物的依赖图

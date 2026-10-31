@@ -1,27 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "道渊",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "identifier": "com.wacilimonster.dyapp",
   "build": {
     "frontendDist": "../../prototype"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "title": "道渊 · 独立版",
-        "width": 1280,
-        "height": 860,
-        "minWidth": 900,
-        "minHeight": 640,
-        "resizable": true,
-        "center": true,
-        "theme": "Dark"
-      }
-    ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob: https://free-img.400040.xyz; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://api.github.com https://github.com https://objects.githubusercontent.com",
+      "csp": "default-src 'self'; img-src 'self' data: blob: https://free-img.400040.xyz; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://gh-proxy.com",
       "dangerousDisableAssetCspModification": false
     }
   },

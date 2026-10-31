@@ -2,7 +2,7 @@
  *
  * 同一份 UI 要在两种环境下跑：
  *   - 浏览器（原型预览）：没有壳，所有壳能力降级为"不可用"提示；
- *   - Tauri 壳（Windows / 安卓）：通过 invoke 调 Rust。
+ *   - Tauri 壳（安卓）：通过 invoke 调 Rust。
  *
  * 这样界面代码不需要写 if (isTauri)，只问 `DYApp.available()`。
  */

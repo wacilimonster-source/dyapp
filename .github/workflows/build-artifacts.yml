@@ -1,6 +1,6 @@
 name: build-artifacts
 
-# 产物构建（手动触发）：Windows 安装包（msi/nsis）+ 安卓 APK。
+# 产物构建（手动触发）：安卓 APK。
 #
 # 与 app-ci 的分工：app-ci 只做"检查"（fmt/check/test/语法/一致性），
 # 这里只负责出可交付物（构建慢，按需跑，不阻塞日常提交）。
@@ -14,33 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-
-      - name: 安装 tauri-cli
-        run: cargo install tauri-cli --version "^2" --locked
-
-      - name: 构建 Windows 安装包（msi + nsis）
-        working-directory: app/src-tauri
-        run: cargo tauri build
-
-      - name: 上传 Windows 产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-installers
-          path: |
-            app/src-tauri/target/release/bundle/msi/*.msi
-            app/src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-
   android:
     runs-on: ubuntu-latest
     steps:
