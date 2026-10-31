@@ -87,7 +87,17 @@ do_publish() {
 
   mkdir -p dist
   rm -f "$OUT_ZIP"
-  (cd prototype && zip -qr "$OUT_ZIP" . -x '*.DS_Store' '*/__MACOSX/*')
+  python - "$ROOT/prototype" "$(cygpath -w "$OUT_ZIP")" <<'PY'
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+    for d, _, files in os.walk(src):
+        for f in files:
+            if f == '.DS_Store' or '__MACOSX' in d:
+                continue
+            full = os.path.join(d, f)
+            z.write(full, os.path.relpath(full, src))
+PY
 
   local token
   token="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')"
