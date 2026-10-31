@@ -105,7 +105,7 @@
 4. **安卓返回键拦截未实现**（行为已在 docs/04 第 5.1 节定义）。
 5. **app.js 未做物理拆分**（约 2000 行单闭包）：双源规则表与死代码已清，文件拆分留待有 UI 回归手段后单独做。
 6. **滚动摘要为抽取式**：`memory/recap.js` 把窗口外的回合压成"时间·地点 + 正文开头"注入 L3.5；语义级归纳（模型摘要）留作后续，接口不变。
-7. **产物构建为手动触发**：`.github/workflows/build-artifacts.yml`（安卓 APK），首次运行需在 Actions 页观察一次。
+7. **产物在本机构建并签名**：`bash tools/release-local.sh build`，CI 不再构建 APK（CI 拿不到签名材料，只能产出未签名包）。
 
 ---
 
@@ -113,7 +113,7 @@
 
 - 远端：<https://github.com/wacilimonster-source/dyapp>（公开）
 - 当前版本：[`VERSION`](VERSION)（单一真源，需与 `prototype/update.js` 的 `VERSION` 一致，CI 会校验）
-- 发版：改 `VERSION` 与 `update.js` → `git tag vX.Y.Z` → push tag，CI 自动建 Release 并附产物
+- 发版：**本地完成，不走 CI**。改四处版本号 + 写 `release-notes/vX.Y.Z.md` → `bash tools/release-local.sh build` → 提交、打 tag、推送 → `bash tools/release-local.sh publish`。只上传已签名 APK，步骤与签名纪律见 [docs/02 第 2 节](docs/02-发布与更新机制.md)
 - 客户端「检查更新」读取的正是 Release 的 tag 与说明，详见 [docs/02-发布与更新机制.md](docs/02-发布与更新机制.md)
 
 > **`_卡资产提取/` 已入库**：作者即原卡作者，卡片原文的著作权与再分发权均在本项目方。

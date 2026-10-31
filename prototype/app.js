@@ -793,8 +793,13 @@ import { retrieve } from './memory/retrieve.js';
         <span class="crisis lv${lv}">危机 · ${esc(W.危机程度)}</span>
         <span>遭遇冷却 ${W.遭遇冷却}</span>
       </div>
-      <div class="agg" id="hud-agg" title="点击展开/收起六维" aria-label="展开六维">
-        ${D.RES.map((r) => `<span style="flex:${Math.max(1, clamp(Number(P[r.key]) || 0, 0, 100))};background:${r.color}"></span>`).join('')}
+      <div class="agg" id="hud-agg" role="button" tabindex="0" title="点击展开/收起六维" aria-label="展开六维">
+        ${['生命', '灵力', '修为'].map((k) => {
+          const r = D.RES.find((x) => x.key === k);
+          const v = clamp(Number(P[k]) || 0, 0, 100);
+          return `<span class="agg-i${v < 30 && k !== '修为' ? ' low' : ''}"><em>${k}</em><i><b style="width:${v}%;background:${r ? r.color : '#d4af37'}"></b></i></span>`;
+        }).join('')}
+        <span class="agg-more">${hudExpanded ? '收起 ▴' : '六维 ▾'}</span>
       </div>
       <div class="hud-bars ${hudExpanded ? '' : 'collapsed'}" id="hud-bars">
         ${D.RES.map((r) => barHTML(r.key, P[r.key], r.color, r.key === '修为' && P.修为 >= 100 ? '瓶颈' : r.key === '道心' ? daoStage(P.道心) : '')).join('')}
@@ -1015,8 +1020,8 @@ import { retrieve } from './memory/retrieve.js';
     const ms = performance.now() - t0;
     if (result && result.usage) billTurn(result.usage, ms);
 
-    if (opts.holdForJudge && result.duel) {
-      // 突破：先把判定结果交给玩家确认，再揭示正文
+    if ((opts.holdForJudge || result.kind === 'free') && result.duel) {
+      // 突破 / 斗法（含对话里打起来的战斗）：先把判定结果交给玩家确认，再揭示正文
       showJudge(result.duel, () => paintTurn(bubble, wrap, result, ms));
       return result;
     }

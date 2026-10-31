@@ -81,7 +81,7 @@ export function parseTurnResult(raw) {
   const logs = [];
   const value = extractJson(raw);
   if (!value || typeof value !== 'object') {
-    return { effects: [], scene: {}, choices: [], logs: ['裁决结果不是合法 JSON，本次状态未更新'] };
+    return { effects: [], scene: {}, choices: [], combat: null, logs: ['裁决结果不是合法 JSON，本次状态未更新'] };
   }
 
   const effects = [];
@@ -119,7 +119,14 @@ export function parseTurnResult(raw) {
     }
   }
 
-  return { effects, scene, choices, logs };
+  let combat = null;
+  const cb = value.combat;
+  if (cb && typeof cb === 'object' && !Array.isArray(cb)) {
+    const name = typeof cb.opponent === 'string' ? cb.opponent.trim().slice(0, 20) : '';
+    if (name) combat = { opponent: name };
+  }
+
+  return { effects, scene, choices, combat, logs };
 }
 
 /** 只取正文：模型有时会把正文塞在 narrative/text/content 任一字段。 */

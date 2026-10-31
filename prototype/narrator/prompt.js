@@ -133,7 +133,8 @@ export function composeArbiter({ action, narrative, state, recent = [], retrieve
     'JSON 形状：',
     '{"effects":[{"op":"delta|set|add|remove","target":"主角.灵力","value":-12,"reason":"施展御剑术"}],',
     ' "scene":{"当前地点":"青石镇·醉仙楼","危机程度":"低","天气":"细雨"},',
-    ' "choices":["继续修炼","去坊市看看"]}',
+    ' "choices":["继续修炼","去坊市看看"],',
+    ' "combat":null}',
     '',
     'target 用扁平点路径，可用前缀：世界 / 主角 / 道侣.<名> / 灵宠.<名> / 人物.<名> / 机遇.<名> / 绝色榜.<名> / 玉简.<名>。',
     'op 语义：delta=数值增减（只能用于数值字段）、set=覆盖、add=新增条目、remove=删除条目。',
@@ -143,6 +144,7 @@ export function composeArbiter({ action, narrative, state, recent = [], retrieve
     '3. 禁止修改「性格」这类固定设定，也禁止写「境界」「境界DC」「当前时间」（引擎独占，写了会被丢弃）；',
     '4. 若本回合没有任何状态变化，effects 返回空数组；',
     '5. choices 给 2–4 条、每条不超过 20 字的下一步行动建议。',
+    '6. combat：正文里若有人动手、双方已经或即将交手（斗法、厮杀、伏击），填 {"opponent":"对手名称"}，否则填 null；争吵、威胁、单纯对峙不算。',
   ].join('\n');
 
   const ctx = [

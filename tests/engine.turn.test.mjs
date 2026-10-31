@@ -252,3 +252,41 @@ test('advanceTime：只走时段时天数不变；跨日时时段回到清晨', 
   assert.equal(w.天数, 3);
   assert.equal(w.时段, '清晨');
 });
+
+/* ----------------------------- 叙事里爆发战斗 ----------------------------- */
+test('runTurn：裁决器标出 combat 时，引擎掷骰、续写战斗并落地伤势', async () => {
+  const state = baseState();
+  const hp0 = state.主角.生命;
+  let streams = 0;
+  const llm = {
+    async stream(req, onEvent) {
+      streams += 1;
+      const text = streams === 1 ? '黑衣人拔刀扑来，你侧身迎上。' : '三招之后，对方败退。';
+      onEvent({ type: 'delta', data: { text } });
+    },
+    async completeJson() {
+      return { effects: [], scene: {}, choices: ['追击', '收手'], combat: { opponent: '黑衣人' } };
+    },
+  };
+  const r = await runTurn({
+    action: { kind: 'free', text: '拦住他问个清楚' },
+    state, index: INDEX, llm, rng: makeRng(7), recent: [],
+  });
+  assert.equal(streams, 2, '应有第二次叙事调用来续写战斗');
+  assert.ok(r.duel, '应产出 duel');
+  assert.equal(r.duel.opponentName, '黑衣人');
+  assert.ok(r.narrative.startsWith('黑衣人拔刀扑来') && r.narrative.includes('三招之后'));
+  assert.notEqual(state.主角.生命, hp0, '斗法伤势应已落地');
+});
+
+test('runTurn：combat 为 null 时不触发斗法，也不多调一次模型', async () => {
+  const state = baseState();
+  let streams = 0;
+  const llm = {
+    async stream(_r, onEvent) { streams += 1; onEvent({ type: 'delta', data: { text: '你静坐。' } }); },
+    async completeJson() { return { effects: [], scene: {}, choices: [], combat: null }; },
+  };
+  const r = await runTurn({ action: { kind: 'free', text: '静观' }, state, index: INDEX, llm, rng: makeRng(1), recent: [] });
+  assert.equal(streams, 1);
+  assert.equal(r.duel, null);
+});

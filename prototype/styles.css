@@ -167,9 +167,14 @@ button { background: none; border: 0; cursor: pointer; }
 .hud .crisis.lv1 { color: var(--ok); border-color: rgba(111, 212, 154, 0.4); }
 .hud .crisis.lv2 { color: var(--warn); border-color: rgba(255, 176, 102, 0.4); }
 .hud .crisis.lv3 { color: var(--bad); border-color: rgba(255, 122, 107, 0.5); }
-/* 六维：默认收成一条 8px 聚合条（按比例着色，一眼看出哪项在掉），点一下展开 */
-.agg { display: flex; gap: 1px; height: 8px; padding: 2px 12px 8px; cursor: pointer; }
-.agg > span { height: 8px; border-radius: 2px; transition: flex-grow 0.4s; }
+/* 六维：默认只露 生命/灵力/修为 三条带名字的细条（低于 30 变红），点一下展开全部六维 */
+.agg { display: flex; align-items: center; gap: 12px; padding: 2px 12px 8px; cursor: pointer; }
+.agg-i { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.agg-i em { font-style: normal; font-size: 0.68rem; color: var(--dim); white-space: nowrap; }
+.agg-i i { flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.agg-i b { display: block; height: 100%; border-radius: 2px; transition: width 0.4s; }
+.agg-i.low em { color: var(--bad); }
+.agg-more { font-size: 0.68rem; color: var(--faint); white-space: nowrap; }
 .hud-bars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; padding: 0 12px 9px; }
 .hud-bars.collapsed { display: none; }
 .hud-bars .bar { margin-bottom: 0; }

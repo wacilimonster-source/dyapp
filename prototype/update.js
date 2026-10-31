@@ -15,7 +15,7 @@ window.DYUpdate = (function () {
    * 镜像返回的 digest 只用来校验下载，镜像本身的可信度低于直连，所以直连永远排第一。 */
   const API_FALLBACKS = ['https://gh-proxy.com/'];
   const PAGE = 'https://github.com/' + REPO + '/releases';
-  const VERSION = '0.9.0';                 // 当前版本，发版时同步 VERSION 文件
+  const VERSION = '0.10.0';                 // 当前版本，发版时同步 VERSION 文件
   const LS_AUTO = 'dy.update.auto';
   const TIMEOUT_MS = 8000;
 

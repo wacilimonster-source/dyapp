@@ -24,6 +24,7 @@ export const COMBAT_WORDS = [
   '出手', '攻击', '进攻', '斩杀', '击杀', '灭杀', '斗法', '激战', '恶战', '决战',
   '应战', '迎战', '围攻', '搏杀', '厮杀', '动手', '拔剑', '出剑', '一剑', '轰杀',
   '封印', '擒', '挑战', '干一架', '打起来', '战斗', '开打', '打他', '打她',
+  '交手', '偷袭', '突袭', '反击', '祭出', '拼杀', '杀了', '斩了', '打败', '教训',
 ];
 
 /** 判断一句话是不是战斗意图（点名在场人物 + 战斗词，或纯战斗词）。 */
@@ -89,9 +90,13 @@ export function inventAdversary(state, mine, rng = Math.random) {
  * 一次斗法结算。
  * @returns {{hints:string[], effects:object[], duel:object}}
  */
-export function resolveDuel({ state, text = '', rng = Math.random }) {
+export function resolveDuel({ state, text = '', rng = Math.random, opponent = '' }) {
   const P = state.主角;
-  const foe = pickAdversary(state, text, rng);
+  const foe = pickAdversary(state, opponent ? `${opponent} ${text}` : text, rng);
+  if (opponent && foe.name !== opponent && !(state?.人物 || {})[opponent]) {
+    foe.name = opponent;
+    foe.来源 = '裁决器指认的对手（境界按危机程度估算）';
+  }
   const mine = String(P.境界 || '凡');
   const dcA = Number(P.境界DC ?? parseRealm(mine).dc);
   const dcB = parseRealm(foe.realm).dc;

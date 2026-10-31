@@ -128,6 +128,9 @@ export async function runTurn(input) {
 
   const intent = resolveIntent(action, state, rng);
   const hints = [...intent.hints];
+  if (!intent.duel) {
+    hints.push('若本回合剧情里战斗爆发，请写到双方交手的一瞬为止，不要写出胜负与伤势，战斗结果会由引擎随后判定。');
+  }
 
   // 遭遇：冷却归零就抽一个候选，交给模型演
   let encounter = null;
@@ -167,7 +170,7 @@ export async function runTurn(input) {
     logs.push(`检索失败，已降级为只注入常驻法则：${e?.message || e}`);
   }
 
-  const duel = intent.duel || null;
+  let duel = intent.duel || null;
 
   // 叙事：默认模式与预设模式在这里分岔，但产出的都是同一种 PromptPlan
   onPhase?.('narrating');
@@ -208,6 +211,7 @@ export async function runTurn(input) {
   let effects = [];
   let scene = {};
   let choices = [];
+  let combat = null;
   if (streamed.ok) {
     onPhase?.('arbitrating');
     const arb = composeArbiter({
@@ -225,14 +229,36 @@ export async function runTurn(input) {
       effects = parsed.effects;
       scene = parsed.scene;
       choices = parsed.choices;
+      combat = parsed.combat;
       logs.push(...parsed.logs);
     } else {
       logs.push(`裁决失败，本次状态未更新：${d.error}`);
     }
   }
 
+  // 叙事里打起来了：引擎掷骰定胜负，再让模型接着写战斗经过
+  let duelEffects = [];
+  if (!duel && combat) {
+    const c = resolveDuel({ state, text, rng, opponent: combat.opponent });
+    duel = c.duel;
+    duelEffects = c.effects;
+    advanceTime(state.世界, 1);
+    logs.push(`叙事触发斗法：对手「${combat.opponent}」`);
+    const head = narrative;
+    const follow = await streamNarrative(llm, [
+      ...messages,
+      { role: 'assistant', content: head },
+      { role: 'user', content: c.hints.join('\n') + '\n请紧接上文，只写这场战斗的经过与结局（200字内），不要重复已写内容，不要写状态标记。' },
+    ], onDelta ? (chunk, full) => {
+      const cut = stateBlockIndex(full);
+      onDelta(chunk, head + '\n\n' + (cut >= 0 ? full.slice(0, cut) : full));
+    } : undefined, { sampling: stSamplingToOverride(plan.sampling) });
+    if (follow.ok) narrative = head + '\n\n' + sanitizeNarrative(follow.text);
+    else logs.push(`战斗续写失败，仅保留判定：${follow.error || ''}`);
+  }
+
   // 引擎自算的效果先落地，模型给的效果后落地（模型可能再次修改，比如被毒伤叠加）
-  const merged = intent.preEffects ? [...intent.effects, ...effects] : effects;
+  const merged = intent.preEffects ? [...intent.effects, ...effects] : [...duelEffects, ...effects];
   onPhase?.('applying');
   const applied = applyAll(state, merged);
 
