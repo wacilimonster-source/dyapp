@@ -1,13 +1,23 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "道渊",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "identifier": "com.wacilimonster.dyapp",
   "build": {
     "frontendDist": "../../prototype"
   },
   "app": {
     "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "道渊 · 独立版",
+        "width": 420,
+        "height": 900,
+        "resizable": true,
+        "theme": "Dark"
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data: blob: https://free-img.400040.xyz; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://gh-proxy.com",
       "dangerousDisableAssetCspModification": false
@@ -27,7 +37,7 @@
     "longDescription": "把《道渊》角色卡重做成 AI 驱动的修仙独立游戏：引擎管账本与规则，模型管演出与自由剧情。",
     "android": {
       "minSdkVersion": 26,
-      "versionCode": 6
+      "versionCode": 7
     }
   },
   "plugins": {}
