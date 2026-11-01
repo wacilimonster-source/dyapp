@@ -33,6 +33,8 @@ check_versions() {
   echo "VERSION=$VER  update.js=$js  tauri.conf.json=$tauri  Cargo.toml=$cargo"
   [ "$js" = "$VER" ] && [ "$tauri" = "$VER" ] && [ "$cargo" = "$VER" ] || die "四处版本号不一致"
   [ -f "release-notes/$TAG.md" ] || die "缺少 release-notes/$TAG.md"
+  # 安卓壳靠这段配置创建窗口：删了就是「装得上、打开纯黑、不报错」（0.9.0 / 0.10.0 的事故）
+  grep -q '"windows"' app/src-tauri/tauri.conf.json || die "tauri.conf.json 缺少 app.windows，安卓会黑屏"
 }
 
 do_build() {
